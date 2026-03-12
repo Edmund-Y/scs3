@@ -1,0 +1,17 @@
+{
+  "name": "korea-restaurant",
+  "version": "3.2.0",
+  "description": "경로식당 이용자 관리 프로그램",
+  "main": "main.js",
+  "scripts": {
+    "start": "chcp 65001 > nul && electron ."
+  },
+  "author": "",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^33.0.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.11.0"
+  }
+}
