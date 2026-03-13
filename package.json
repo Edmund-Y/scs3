@@ -4,12 +4,31 @@
   "description": "경로식당 이용자 관리 프로그램",
   "main": "main.js",
   "scripts": {
-    "start": "chcp 65001 > nul && electron ."
+    "start": "chcp 65001 > nul && electron .",
+    "build": "electron-builder build --win"
+  },
+  "build": {
+    "productName": "경로식당",
+    "appId": "com.welfare.korea-restaurant",
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "경로식당"
+    }
   },
   "author": "",
   "license": "UNLICENSED",
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
