@@ -274,6 +274,8 @@ input, textarea {
   overflow-y: auto;
   padding: 20px;
   background: var(--bg-darkest);
+  display: flex;
+  flex-direction: column;
 }
 
 /* ---- Footer ---- */
@@ -894,4 +896,13 @@ input, textarea {
   display: flex;
   gap: 12px;
   justify-content: center;
+}
+
+/* ============================================================
+   Date Input Dark Theme
+   ============================================================ */
+input[type="month"],
+input[type="date"],
+input[type="week"] {
+  color-scheme: dark;
 }
