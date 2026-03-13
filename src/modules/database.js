@@ -582,6 +582,7 @@ class DatabaseManager {
       ORDER BY e.created_at DESC
     `, [today, today]);
     console.log(`[DB:getTodayEvents] ${events.length}건 조회됨`);
+    return events;
   }
 
   getUserTodayCount(userId) {
