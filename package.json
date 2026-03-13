@@ -12,6 +12,7 @@
     "electron": "^33.0.0"
   },
   "dependencies": {
+    "chart.js": "^4.5.1",
     "sql.js": "^1.11.0"
   }
 }

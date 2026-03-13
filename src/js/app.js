@@ -626,7 +626,7 @@ class CountPage {
     }
     container.innerHTML = `
       <p style="color: var(--text-muted); font-size: 11px; padding: 4px 12px;">활성 사용자 ${users.length}명 — 클릭하여 체크인</p>
-    ` + users.slice(0, 100).map(u => `
+    ` + users.map(u => `
       <div class="search-result-item" data-number="${u.number}">
         <span class="number">${u.number}</span>
         <span class="name">${u.name}</span>
@@ -744,8 +744,11 @@ class EditPage {
   render() {
     const el = document.createElement('div');
     el.className = 'fade-in';
+    el.style.display = 'flex';
+    el.style.flexDirection = 'column';
+    el.style.height = '100%';
     el.innerHTML = `
-      <div style="display: flex; gap: 12px; margin-bottom: 16px; align-items: center;">
+      <div style="display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-shrink: 0;">
         <div style="flex: 1; position: relative;">
           <input class="input" id="editSearch" placeholder="번호 또는 이름으로 검색..." style="padding-left: 40px;" />
           <span style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted);">🔍</span>
@@ -759,8 +762,8 @@ class EditPage {
         <button class="btn btn-primary btn-sm" id="addUserBtn">+ 사용자 추가</button>
       </div>
 
-      <div style="background: var(--card-bg); border-radius: var(--radius-md); overflow: hidden;">
-        <div style="overflow-y: auto; max-height: calc(100vh - 260px);">
+      <div style="background: var(--card-bg); border-radius: var(--radius-md); overflow: hidden; flex: 1; display: flex; flex-direction: column; min-height: 0;">
+        <div style="overflow-y: auto; flex: 1;">
           <table class="data-table" id="userTable">
             <thead>
               <tr>
@@ -801,6 +804,28 @@ class EditPage {
 
     // Add user
     document.getElementById('addUserBtn').addEventListener('click', () => this._showAddUserDialog());
+
+    // Card Scanner Wedge Listener
+    this._wedgeBuffer = '';
+    this._wedgeTimeout = null;
+    this._handleGlobalKeydown = async (e) => {
+      // 모달이 열려있으면 웨지 무시
+      if (document.querySelector('.modal-overlay')) return;
+
+      if (e.key === 'Enter') {
+        const val = this._wedgeBuffer.trim();
+        if (val) {
+          e.preventDefault();
+          this._wedgeBuffer = '';
+          await this._handleCardScan(val);
+        }
+      } else if (e.key.length === 1) {
+        this._wedgeBuffer += e.key;
+        clearTimeout(this._wedgeTimeout);
+        this._wedgeTimeout = setTimeout(() => { this._wedgeBuffer = ''; }, 100);
+      }
+    };
+    document.addEventListener('keydown', this._handleGlobalKeydown);
 
     await this._loadUsers();
   }
@@ -881,7 +906,133 @@ class EditPage {
     }
   }
 
-  _showAddUserDialog() {
+  async _handleCardScan(cardNumber) {
+    const owner = await window.api.getCardOwnerInfo(cardNumber);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="min-width: 420px;">
+        <h3>카드 스캔됨</h3>
+        <div style="background: var(--bg-medium); border-radius: var(--radius-sm); padding: 12px 16px; margin-bottom: 16px;">
+          <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">카드 번호</div>
+          <div style="font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--accent-cyan);">${cardNumber}</div>
+          ${owner ? `
+            <div style="margin-top: 8px; font-size: 12px; color: var(--warning);">
+              현재 소유자: ${owner.number} ${owner.name}${owner.status === 'suspended' ? ' (일시정지)' : ''}
+            </div>` : `
+            <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">등록되지 않은 카드</div>`}
+        </div>
+        <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">어떤 작업을 하시겠습니까?</p>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="btn btn-primary" id="scanAssign">기존 사용자 카드 변경</button>
+          <button class="btn btn-ghost" id="scanAddUser">신규 사용자 등록</button>
+          <button class="btn btn-ghost" id="scanCancel" style="color: var(--text-muted);">취소</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#scanAssign').addEventListener('click', () => {
+      overlay.remove();
+      this._showCardAssignDialog(cardNumber);
+    });
+    overlay.querySelector('#scanAddUser').addEventListener('click', () => {
+      overlay.remove();
+      this._showAddUserDialog(cardNumber);
+    });
+    overlay.querySelector('#scanCancel').addEventListener('click', () => overlay.remove());
+  }
+
+  _showCardAssignDialog(cardNumber) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="min-width: 480px;">
+        <h3>기존 사용자 카드 변경</h3>
+        <div style="background: var(--bg-medium); border-radius: var(--radius-sm); padding: 8px 12px; margin-bottom: 16px; font-size: 12px; color: var(--text-muted);">
+          카드 번호: <span style="font-family: var(--font-mono); color: var(--accent-cyan);">${cardNumber}</span>
+        </div>
+        <div class="search-input-wrapper" style="margin-bottom: 12px;">
+          <span class="search-icon">🔍</span>
+          <input class="input" id="assignSearch" placeholder="번호 또는 이름으로 검색..." />
+        </div>
+        <div id="assignResults" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--divider); border-radius: var(--radius-sm);">
+          <div style="text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px;">검색어를 입력하세요</div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+          <button class="btn btn-ghost" id="assignCancel">취소</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const searchInput = overlay.querySelector('#assignSearch');
+    const resultsEl = overlay.querySelector('#assignResults');
+
+    let searchTimer;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = searchInput.value.trim();
+      if (!q) {
+        resultsEl.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px;">검색어를 입력하세요</div>';
+        return;
+      }
+      searchTimer = setTimeout(async () => {
+        try {
+          const users = await window.api.searchUsers(q, 'all');
+          if (users.length === 0) {
+            resultsEl.innerHTML = '<div style="text-align: center; padding: 20px; color: var(--text-muted); font-size: 13px;">검색 결과 없음</div>';
+            return;
+          }
+          resultsEl.innerHTML = users.map(u => `
+            <div class="assign-user-row" data-id="${u.id}" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--divider);">
+              <div>
+                <span style="font-weight: 700; color: var(--accent-cyan);">${u.number}</span>
+                <span style="margin-left: 8px;">${u.name}</span>
+                <span class="badge ${u.status === 'active' ? 'badge-active' : u.status === 'suspended' ? 'badge-suspended' : 'badge-terminated'}" style="margin-left: 8px; font-size: 10px;">${u.status === 'active' ? '활성' : u.status === 'suspended' ? '정지' : '종결'}</span>
+              </div>
+              <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">${u.card_number || '카드없음'}</div>
+            </div>
+          `).join('');
+
+          resultsEl.querySelectorAll('.assign-user-row').forEach(row => {
+            row.addEventListener('mouseenter', () => row.style.background = 'var(--bg-medium)');
+            row.addEventListener('mouseleave', () => row.style.background = '');
+            row.addEventListener('click', async () => {
+              const targetUserId = parseInt(row.dataset.id);
+              overlay.remove();
+              try {
+                const existingOwner = await window.api.getCardOwnerInfo(cardNumber);
+                let result;
+                if (existingOwner) {
+                  result = await window.api.transferCard(cardNumber, targetUserId, `카드 변경 (${existingOwner.number} ${existingOwner.name} → #${targetUserId})`);
+                } else {
+                  result = await window.api.reissueCard(targetUserId, cardNumber, '카드 스캔으로 등록');
+                }
+                if (result.success) {
+                  window.app.showToast('카드가 변경되었습니다', 'success');
+                  await this._loadUsers(document.getElementById('editSearch')?.value || '');
+                } else {
+                  await window.api.showError('카드 변경 실패', result.message);
+                }
+              } catch (e) {
+                await window.api.showError('오류', e.message);
+              }
+            });
+          });
+        } catch (e) {
+          resultsEl.innerHTML = `<div style="text-align: center; padding: 20px; color: var(--error); font-size: 13px;">오류: ${e.message}</div>`;
+        }
+      }, 300);
+    });
+
+    overlay.querySelector('#assignCancel').addEventListener('click', () => overlay.remove());
+
+    searchInput.focus();
+  }
+
+  _showAddUserDialog(prefillCard = '') {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
@@ -889,16 +1040,23 @@ class EditPage {
         <h3>사용자 추가</h3>
         <div style="display: flex; flex-direction: column; gap: 12px;">
           <div>
-            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">번호</label>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">번호 *</label>
             <input class="input" id="addNumber" placeholder="사용자 번호" />
           </div>
           <div>
-            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">이름</label>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">이름 *</label>
             <input class="input" id="addName" placeholder="사용자 이름" />
           </div>
           <div>
-            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">비고</label>
-            <input class="input" id="addNotes" placeholder="비고 (선택)" />
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">💳 카드 번호 (선택)</label>
+            <div style="display: flex; gap: 8px;">
+              <input class="input" id="addCard" placeholder="카드 번호" style="flex: 1;" />
+              <button class="btn btn-ghost btn-sm" id="addCardClear" title="비우기" style="white-space: nowrap;">재등록</button>
+            </div>
+          </div>
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">비고 (선택)</label>
+            <input class="input" id="addNotes" placeholder="비고" />
           </div>
         </div>
         <div style="display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end;">
@@ -909,20 +1067,65 @@ class EditPage {
     `;
     document.body.appendChild(overlay);
 
-    overlay.querySelector('#addCancel').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    // prefillCard가 있으면 카드 필드에 pre-fill
+    if (prefillCard) {
+      document.getElementById('addCard').value = prefillCard;
+    }
+
+    overlay.querySelector('#addCardClear').addEventListener('click', () => {
+      document.getElementById('addCard').value = '';
+      document.getElementById('addCard').focus();
+    });
+
+    overlay.querySelector('#addCancel').addEventListener('click', () => overlay.remove());
 
     overlay.querySelector('#addConfirm').addEventListener('click', async () => {
       const number = document.getElementById('addNumber').value.trim();
       const name = document.getElementById('addName').value.trim();
+      const cardNumber = document.getElementById('addCard').value.trim();
       const notes = document.getElementById('addNotes').value.trim();
       if (!number || !name) {
         await window.api.showError('입력 오류', '번호와 이름은 필수입니다.');
         return;
       }
-      const result = await window.api.addUser(number, name, notes || null);
+
+      // 카드 번호 중복 확인
+      if (cardNumber) {
+        const existingOwner = await window.api.getCardOwnerInfo(cardNumber);
+        if (existingOwner) {
+          const statusText = existingOwner.status === 'suspended' ? ' (일시정지)' : '';
+          const resp = await window.api.showMessage({
+            type: 'question',
+            buttons: ['취소', '이전'],
+            defaultId: 0,
+            title: '카드 번호 중복',
+            message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 새 사용자에게 이전하시겠습니까?`
+          });
+          if (resp !== 1) return;
+
+          // 사용자 먼저 생성 (카드 없이)
+          const createResult = await window.api.addUser(number, name, notes || null, null);
+          if (!createResult.success) {
+            await window.api.showError('추가 실패', createResult.message);
+            return;
+          }
+          // 카드 이전
+          const transferResult = await window.api.transferCard(cardNumber, createResult.userId, `신규 등록 시 이전 (#${number} ${name})`);
+          if (!transferResult.success) {
+            await window.api.showError('카드 이전 실패', transferResult.message);
+            return;
+          }
+          overlay.remove();
+          window.app.showToast('사용자가 추가되고 카드가 이전되었습니다', 'success');
+          await this._loadUsers();
+          return;
+        }
+      }
+
+      const result = await window.api.addUser(number, name, notes || null, cardNumber || null);
       if (result.success) {
         overlay.remove();
+        window.app.showToast('새 사용자가 추가되었습니다', 'success');
         await this._loadUsers();
       } else {
         await window.api.showError('추가 실패', result.message);
@@ -934,19 +1137,54 @@ class EditPage {
     const user = await window.api.getUserById(userId);
     if (!user) return;
 
+    // 현재 활성 카드 조회
+    const activeCard = await window.api.getActiveCard(userId);
+    const currentCardNumber = activeCard ? activeCard.card_number : '';
+
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
-      <div class="modal">
+      <div class="modal" style="min-width: 480px;">
         <h3>사용자 수정 — ${user.number}</h3>
-        <div style="display: flex; flex-direction: column; gap: 12px;">
-          <div>
-            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">이름</label>
-            <input class="input" id="editName" value="${user.name || ''}" />
+        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">${user.name} (#${user.number})</p>
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          <!-- 기본 정보 -->
+          <div style="border-bottom: 1px solid var(--divider); padding-bottom: 16px;">
+            <div style="font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 12px;">📋 기본 정보</div>
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <div>
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">이름 *</label>
+                <input class="input" id="editName" value="${user.name || ''}" />
+              </div>
+              <div>
+                <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">비고</label>
+                <input class="input" id="editNotes" value="${user.notes || ''}" />
+              </div>
+            </div>
           </div>
+
+          <!-- 상태 관리 -->
+          <div style="border-bottom: 1px solid var(--divider); padding-bottom: 16px;">
+            <div style="font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 12px;">⚙️ 상태 관리</div>
+            <div style="display: flex; align-items: center; gap: 12px; background: var(--bg-medium); border-radius: var(--radius-sm); padding: 12px 16px;">
+              <label class="switch">
+                <input type="checkbox" id="editSuspended" ${user.status === 'suspended' ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+              <span style="font-size: 13px;">일시정지 상태</span>
+            </div>
+          </div>
+
+          <!-- 카드 관리 -->
           <div>
-            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">비고</label>
-            <input class="input" id="editNotes" value="${user.notes || ''}" />
+            <div style="font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 12px;">💳 카드 관리</div>
+            <div>
+              <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">카드 번호</label>
+              <div style="display: flex; gap: 8px;">
+                <input class="input" id="editCard" value="${currentCardNumber}" style="flex: 1;" />
+                <button class="btn btn-ghost btn-sm" id="editCardReissue" style="white-space: nowrap; color: var(--warning);">재등록</button>
+              </div>
+            </div>
           </div>
         </div>
         <div style="display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end;">
@@ -957,24 +1195,82 @@ class EditPage {
     `;
     document.body.appendChild(overlay);
 
-    overlay.querySelector('#editCancel').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    let reissueMode = false;
+
+    overlay.querySelector('#editCardReissue').addEventListener('click', () => {
+      document.getElementById('editCard').value = '';
+      document.getElementById('editCard').focus();
+      reissueMode = true;
+    });
+
+    overlay.querySelector('#editCancel').addEventListener('click', () => overlay.remove());
 
     overlay.querySelector('#editConfirm').addEventListener('click', async () => {
       const name = document.getElementById('editName').value.trim();
       const notes = document.getElementById('editNotes').value.trim();
+      const newCardNumber = document.getElementById('editCard').value.trim();
+      const isSuspended = document.getElementById('editSuspended').checked;
+
+      // 1. 기본 정보 업데이트
       const result = await window.api.updateUser(userId, name, notes);
-      if (result.success) {
-        overlay.remove();
-        await this._loadUsers();
-      } else {
+      if (!result.success) {
         await window.api.showError('수정 실패', result.message);
+        return;
       }
+
+      // 2. 상태 변경
+      if (isSuspended && user.status === 'active') {
+        await window.api.suspendUser(userId);
+      } else if (!isSuspended && user.status === 'suspended') {
+        await window.api.reactivateUser(userId);
+      }
+
+      // 3. 카드 변경 처리
+      if (reissueMode || newCardNumber !== currentCardNumber) {
+        if (newCardNumber) {
+          // 카드 번호 중복 확인 (본인 제외)
+          const existingOwner = await window.api.getCardOwnerInfo(newCardNumber);
+          if (existingOwner && existingOwner.id !== userId) {
+            const statusText = existingOwner.status === 'suspended' ? ' (일시정지)' : '';
+            const resp = await window.api.showMessage({
+              type: 'question',
+              buttons: ['취소', '이전'],
+              defaultId: 0,
+              title: '카드 번호 중복',
+              message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 ${user.name}에게 이전하시겠습니까?`
+            });
+            if (resp !== 1) return;
+
+            const transferResult = await window.api.transferCard(newCardNumber, userId, '사용자 정보 수정 중 이전');
+            if (!transferResult.success) {
+              await window.api.showError('카드 이전 실패', transferResult.message);
+              return;
+            }
+          } else if (!existingOwner || existingOwner.id === userId) {
+            // 재발급 처리
+            const reissueResult = await window.api.reissueCard(userId, newCardNumber, '사용자 정보 수정 (재등록)');
+            if (!reissueResult.success) {
+              await window.api.showError('카드 재발급 실패', reissueResult.message);
+              return;
+            }
+          }
+        } else {
+          // 카드 번호를 비운 경우 - 카드 삭제
+          await window.api.deleteCardsForUser(userId);
+        }
+      }
+
+      overlay.remove();
+      window.app.showToast('사용자 정보가 수정되었습니다', 'success');
+      await this._loadUsers(document.getElementById('editSearch')?.value || '');
     });
   }
 
   cleanup() {
     clearTimeout(this._searchTimeout);
+    if (this._handleGlobalKeydown) {
+      document.removeEventListener('keydown', this._handleGlobalKeydown);
+    }
   }
 }
 
@@ -1011,36 +1307,51 @@ class SpecialRemarksPage {
 
       const icons = { '알러지': '🌰', '휠체어': '♿', '채식': '🥗', '할랄': '☪', '저염식': '🧂', '당뇨': '💉', '기타': '🏷️' };
 
-      container.innerHTML = remarks.map(r => {
+      // 각 특이사항 배정 인원 수 병렬 조회
+      const userCounts = await Promise.all(
+        remarks.map(r => window.api.getUsersForRemark(r.id).then(u => u.length).catch(() => 0))
+      );
+
+      container.innerHTML = remarks.map((r, i) => {
         const icon = icons[r.name] || '📌';
+        const count = userCounts[i];
         return `
-          <div class="stat-card" style="background: var(--card-bg); text-align: left; padding: 20px; cursor: pointer;" data-remark-id="${r.id}">
-            <div style="display: flex; justify-content: space-between; align-items: start;">
-              <div>
-                <span style="font-size: 24px;">${icon}</span>
-                <h3 style="font-size: 16px; font-weight: 600; margin-top: 8px;">${r.name}</h3>
-                ${r.description ? `<p style="color: var(--text-muted); font-size: 12px; margin-top: 4px;">${r.description}</p>` : ''}
+          <div class="stat-card remark-card" data-remark-id="${r.id}"
+            style="background: var(--card-bg); text-align: left; padding: 0; cursor: pointer;
+              border-radius: var(--radius-md); overflow: hidden; transition: transform 0.15s, box-shadow 0.15s;"
+            onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 20px rgba(0,212,255,0.15)'"
+            onmouseout="this.style.transform='';this.style.boxShadow=''">
+            <!-- 카드 바디 -->
+            <div style="padding: 18px 20px 14px;">
+              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
+                <span style="font-size: 26px; line-height: 1; flex-shrink: 0;">${icon}</span>
+                <span class="badge ${r.is_active ? 'badge-active' : 'badge-terminated'}" style="font-size: 10px; margin-top: 2px;">
+                  ${r.is_active ? '활성' : '비활성'}
+                </span>
               </div>
-              <button class="btn-icon delete-remark" data-id="${r.id}" title="삭제">🗑️</button>
+              <h3 style="font-size: 15px; font-weight: 700; margin: 10px 0 4px;">${r.name}</h3>
+              <p style="color: var(--text-muted); font-size: 11px; margin: 0; min-height: 14px; line-height: 1.4;">
+                ${r.description || ''}
+              </p>
             </div>
-            <div style="margin-top: 8px;">
-              <span class="badge ${r.is_active ? 'badge-active' : 'badge-terminated'}">${r.is_active ? '활성' : '비활성'}</span>
+            <!-- 카드 푸터 -->
+            <div style="padding: 8px 20px; background: var(--bg-medium); border-top: 1px solid var(--divider);
+              display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 12px; color: var(--text-muted);">👤</span>
+              <span style="font-size: 12px; font-weight: 600; color: ${count > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)'};">
+                ${count}명 배정됨
+              </span>
+              <span style="margin-left: auto; font-size: 11px; color: var(--text-dim);">클릭하여 관리 →</span>
             </div>
           </div>
         `;
       }).join('');
 
-      container.querySelectorAll('.delete-remark').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const resp = await window.api.showMessage({
-            type: 'warning', buttons: ['취소', '삭제'], defaultId: 0,
-            title: '특이사항 삭제', message: '이 특이사항을 삭제하시겠습니까?'
-          });
-          if (resp === 1) {
-            await window.api.deleteSpecialRemark(parseInt(btn.dataset.id));
-            await this._loadRemarks();
-          }
+      // 카드 클릭 → 상세 다이얼로그
+      container.querySelectorAll('.remark-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const remark = remarks.find(r => r.id === parseInt(card.dataset.remarkId));
+          if (remark) this._showRemarkDetailDialog(remark);
         });
       });
     } catch (e) {
@@ -1048,31 +1359,302 @@ class SpecialRemarksPage {
     }
   }
 
+  async _showRemarkDetailDialog(remark) {
+    const icons = { '알러지': '🌰', '휠체어': '♿', '채식': '🥗', '할랄': '☪', '저염식': '🧂', '당뇨': '💉', '기타': '🏷️' };
+    const icon = icons[remark.name] || '📌';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="width: 760px; max-width: 90vw; max-height: 85vh; display: flex; flex-direction: column; padding: 0; overflow: hidden;">
+
+        <!-- 헤더 -->
+        <div style="padding: 20px 24px 16px; border-bottom: 1px solid var(--divider); flex-shrink: 0;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="font-size: 28px; line-height: 1;">${icon}</span>
+            <div style="flex: 1;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <h3 style="margin: 0; font-size: 18px;">${remark.name}</h3>
+                <span class="badge ${remark.is_active ? 'badge-active' : 'badge-terminated'}" style="font-size: 11px;">
+                  ${remark.is_active ? '활성' : '비활성'}
+                </span>
+              </div>
+              ${remark.description ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--text-muted);">${remark.description}</p>` : ''}
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="btn btn-ghost btn-sm" id="remarkEditBtn" style="font-size: 12px;">✏️ 수정</button>
+              <button class="btn-icon" id="remarkDetailClose" title="닫기" style="font-size: 18px; color: var(--text-muted);">✕</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 바디: 2-패널 -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; flex: 1; min-height: 0; overflow: hidden;">
+
+          <!-- 왼쪽: 배정된 사용자 -->
+          <div style="display: flex; flex-direction: column; border-right: 1px solid var(--divider); min-height: 0;">
+            <div style="padding: 14px 20px 10px; flex-shrink: 0; display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-secondary);">배정된 사용자</span>
+              <span id="assignedCount" style="background: var(--accent-cyan-dim); color: var(--accent-cyan); border-radius: 10px; padding: 1px 8px; font-size: 11px; font-weight: 700;">0</span>
+            </div>
+            <div id="remarkUserList" style="flex: 1; overflow-y: auto; padding: 0 8px 8px;">
+              <div style="text-align: center; padding: 40px 0; color: var(--text-muted); font-size: 13px;">로딩 중...</div>
+            </div>
+          </div>
+
+          <!-- 오른쪽: 사용자 배정 -->
+          <div style="display: flex; flex-direction: column; min-height: 0;">
+            <div style="padding: 14px 20px 10px; flex-shrink: 0;">
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-secondary);">사용자 추가</span>
+              <div style="position: relative; margin-top: 10px;">
+                <span style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 14px;">🔍</span>
+                <input class="input" id="remarkAssignSearch" placeholder="번호 또는 이름 검색..."
+                  style="padding-left: 34px; font-size: 13px;" />
+              </div>
+            </div>
+            <div id="remarkAssignResults" style="flex: 1; overflow-y: auto; padding: 0 8px 8px;">
+              <div style="text-align: center; padding: 40px 0; color: var(--text-muted); font-size: 13px;">로딩 중...</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 푸터 -->
+        <div style="padding: 12px 24px; border-top: 1px solid var(--divider); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
+          <button class="btn btn-ghost btn-sm" id="remarkDeleteBtn" style="color: var(--error);">이 특이사항 삭제</button>
+          <button class="btn btn-ghost" id="remarkDetailCloseBtn">닫기</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const loadAssignedUsers = async () => {
+      const listEl = overlay.querySelector('#remarkUserList');
+      try {
+        const users = await window.api.getUsersForRemark(remark.id);
+        overlay.querySelector('#assignedCount').textContent = users.length;
+        if (users.length === 0) {
+          listEl.innerHTML = `
+            <div style="text-align: center; padding: 40px 16px; color: var(--text-muted);">
+              <div style="font-size: 28px; margin-bottom: 8px;">👤</div>
+              <div style="font-size: 13px;">배정된 사용자 없음</div>
+            </div>`;
+          return;
+        }
+        listEl.innerHTML = users.map(u => `
+          <div style="display: flex; justify-content: space-between; align-items: center;
+            padding: 8px 12px; margin: 2px 0; border-radius: var(--radius-sm);
+            background: var(--bg-medium);">
+            <div>
+              <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${u.number}</span>
+              <span style="margin-left: 8px; font-size: 13px;">${u.name}</span>
+            </div>
+            <button class="unassign-btn" data-uid="${u.user_id}"
+              style="background: none; border: 1px solid var(--error); color: var(--error);
+                border-radius: var(--radius-sm); padding: 2px 8px; font-size: 11px; cursor: pointer;
+                transition: background 0.15s;"
+              onmouseover="this.style.background='rgba(255,68,68,0.15)'"
+              onmouseout="this.style.background='none'">해제</button>
+          </div>
+        `).join('');
+        listEl.querySelectorAll('.unassign-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            await window.api.unassignRemark(parseInt(btn.dataset.uid), remark.id);
+            await loadAssignedUsers();
+            await loadAssignList(overlay.querySelector('#remarkAssignSearch').value.trim());
+          });
+        });
+      } catch (e) {
+        listEl.innerHTML = `<div style="color: var(--error); padding: 12px; font-size: 12px;">오류: ${e.message}</div>`;
+      }
+    };
+
+    const renderAssignList = (users) => {
+      const resultsEl = overlay.querySelector('#remarkAssignResults');
+      if (users.length === 0) {
+        resultsEl.innerHTML = `
+          <div style="text-align: center; padding: 40px 16px; color: var(--text-muted);">
+            <div style="font-size: 13px;">검색 결과 없음</div>
+          </div>`;
+        return;
+      }
+      resultsEl.innerHTML = users.map(u => `
+        <div class="assign-row" data-uid="${u.id}"
+          style="display: flex; justify-content: space-between; align-items: center;
+            padding: 8px 12px; margin: 2px 0; border-radius: var(--radius-sm);
+            background: var(--bg-medium); transition: background 0.15s; cursor: default;"
+          onmouseover="this.style.background='var(--card-hover)'"
+          onmouseout="this.style.background='var(--bg-medium)'">
+          <div>
+            <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${u.number}</span>
+            <span style="margin-left: 8px; font-size: 13px;">${u.name}</span>
+          </div>
+          <button class="btn btn-primary btn-sm assign-btn" data-uid="${u.id}"
+            style="font-size: 11px; padding: 3px 12px;">+ 배정</button>
+        </div>
+      `).join('');
+      resultsEl.querySelectorAll('.assign-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const uid = parseInt(btn.dataset.uid);
+          const result = await window.api.assignRemark(uid, remark.id);
+          if (result.success) {
+            await loadAssignedUsers();
+            await loadAssignList(overlay.querySelector('#remarkAssignSearch').value.trim());
+          } else {
+            window.app.showToast(result.message, 'error');
+          }
+        });
+      });
+    };
+
+    const loadAssignList = async (q = '') => {
+      try {
+        const users = await window.api.searchUsers(q || null, 'active');
+        renderAssignList(users);
+      } catch (e) {
+        const resultsEl = overlay.querySelector('#remarkAssignResults');
+        resultsEl.innerHTML = `<div style="color: var(--error); padding: 12px; font-size: 12px;">오류: ${e.message}</div>`;
+      }
+    };
+
+    await Promise.all([loadAssignedUsers(), loadAssignList()]);
+
+    let searchTimer;
+    overlay.querySelector('#remarkAssignSearch').addEventListener('input', (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadAssignList(e.target.value.trim()), 300);
+    });
+
+    const close = () => overlay.remove();
+    overlay.querySelector('#remarkDetailClose').addEventListener('click', close);
+    overlay.querySelector('#remarkDetailCloseBtn').addEventListener('click', close);
+
+    overlay.querySelector('#remarkEditBtn').addEventListener('click', () => {
+      this._showRemarkEditDialog(remark, async (updated) => {
+        overlay.remove();
+        await this._loadRemarks();
+        // 수정된 내용으로 다이얼로그 다시 열기
+        this._showRemarkDetailDialog(updated);
+      });
+    });
+
+    overlay.querySelector('#remarkDeleteBtn').addEventListener('click', async () => {
+      const resp = await window.api.showMessage({
+        type: 'warning', buttons: ['취소', '삭제'], defaultId: 0,
+        title: '특이사항 삭제', message: `"${remark.name}" 을(를) 삭제하시겠습니까?\n배정된 사용자 정보도 모두 해제됩니다.`
+      });
+      if (resp === 1) {
+        await window.api.deleteSpecialRemark(remark.id);
+        overlay.remove();
+        await this._loadRemarks();
+      }
+    });
+  }
+
+  _showRemarkEditDialog(remark, onSaved) {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="width: 400px;">
+        <h3 style="margin-bottom: 4px;">특이사항 수정</h3>
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px;">특이사항 정보를 수정합니다</p>
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">이름 *</label>
+            <input class="input" id="editRemarkName" value="${remark.name}" />
+          </div>
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">설명</label>
+            <input class="input" id="editRemarkDesc" value="${remark.description || ''}" placeholder="간단한 설명을 입력하세요" />
+          </div>
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 8px;">상태</label>
+            <div style="display: flex; align-items: center; gap: 10px; background: var(--bg-medium); border-radius: var(--radius-sm); padding: 10px 14px;">
+              <label class="switch">
+                <input type="checkbox" id="editRemarkActive" ${remark.is_active ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+              <span style="font-size: 13px;" id="editRemarkActiveLabel">${remark.is_active ? '활성' : '비활성'}</span>
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end;">
+          <button class="btn btn-ghost" id="editRemarkCancel">취소</button>
+          <button class="btn btn-primary" id="editRemarkConfirm">저장</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const nameInput = overlay.querySelector('#editRemarkName');
+    nameInput.focus();
+    nameInput.select();
+
+    // 토글 라벨 실시간 반영
+    overlay.querySelector('#editRemarkActive').addEventListener('change', (e) => {
+      overlay.querySelector('#editRemarkActiveLabel').textContent = e.target.checked ? '활성' : '비활성';
+    });
+
+    overlay.querySelector('#editRemarkCancel').addEventListener('click', () => overlay.remove());
+
+    overlay.querySelector('#editRemarkConfirm').addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const desc = overlay.querySelector('#editRemarkDesc').value.trim();
+      const isActive = overlay.querySelector('#editRemarkActive').checked;
+      const result = await window.api.updateSpecialRemark(remark.id, name, desc, isActive);
+      if (result.success) {
+        overlay.remove();
+        if (onSaved) onSaved({ ...remark, name, description: desc, is_active: isActive ? 1 : 0 });
+      } else {
+        await window.api.showError('수정 실패', result.message);
+      }
+    });
+
+    overlay.querySelector('#editRemarkDesc').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') overlay.querySelector('#editRemarkConfirm').click();
+    });
+  }
+
   _showAddDialog() {
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
-      <div class="modal">
-        <h3>특이사항 추가</h3>
-        <div style="display: flex; flex-direction: column; gap: 12px;">
-          <input class="input" id="remarkName" placeholder="이름 (예: 알러지)" />
-          <input class="input" id="remarkDesc" placeholder="설명 (선택)" />
+      <div class="modal" style="width: 400px;">
+        <h3 style="margin-bottom: 4px;">특이사항 추가</h3>
+        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px;">새 특이사항 유형을 등록합니다</p>
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">이름 *</label>
+            <input class="input" id="remarkName" placeholder="예: 알러지, 당뇨, 채식 ..." />
+          </div>
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">설명 (선택)</label>
+            <input class="input" id="remarkDesc" placeholder="간단한 설명을 입력하세요" />
+          </div>
         </div>
-        <div style="display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end;">
+        <div style="display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end;">
           <button class="btn btn-ghost" id="remarkCancel">취소</button>
           <button class="btn btn-primary" id="remarkConfirm">추가</button>
         </div>
       </div>
     `;
     document.body.appendChild(overlay);
-    overlay.querySelector('#remarkCancel').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    const nameInput = overlay.querySelector('#remarkName');
+    nameInput.focus();
+
+    overlay.querySelector('#remarkCancel').addEventListener('click', () => overlay.remove());
     overlay.querySelector('#remarkConfirm').addEventListener('click', async () => {
-      const name = document.getElementById('remarkName').value.trim();
-      if (!name) { await window.api.showError('오류', '이름을 입력하세요.'); return; }
-      const result = await window.api.addSpecialRemark(name, document.getElementById('remarkDesc').value.trim(), 0, null, null, 1);
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const result = await window.api.addSpecialRemark(name, overlay.querySelector('#remarkDesc').value.trim(), 0, null, null, 1);
       if (result.success) { overlay.remove(); await this._loadRemarks(); }
       else { await window.api.showError('추가 실패', result.message); }
+    });
+
+    // Enter 키 제출
+    overlay.querySelector('#remarkDesc').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') overlay.querySelector('#remarkConfirm').click();
     });
   }
 
@@ -1081,44 +1663,152 @@ class SpecialRemarksPage {
 
 /* ---- Dashboard Page ---- */
 class DashboardPage {
+  constructor() {
+    this._mode = 'monthly';
+    this._lastRows = [];
+    this._label = '';
+  }
+
   render() {
     const el = document.createElement('div');
     el.className = 'fade-in';
     el.innerHTML = `
-      <div class="grid-4" id="dashStats" style="margin-bottom: 24px;"></div>
       <div style="background: var(--card-bg); border-radius: var(--radius-md); padding: 24px;">
-        <h3 class="section-title">사용자 현황</h3>
-        <div id="dashContent" style="color: var(--text-muted);">로딩 중...</div>
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+          <h3 class="section-title" style="margin: 0;">이용 현황</h3>
+          <div style="display:flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;">
+            <button id="modeMonthly" style="padding: 5px 14px; font-size: 13px; border: none; background: var(--accent-cyan); color: #000; cursor: pointer;">월간</button>
+            <button id="modeWeekly" style="padding: 5px 14px; font-size: 13px; border: none; background: var(--bg-medium); color: var(--text-secondary); cursor: pointer;">주간</button>
+          </div>
+          <div id="dashDateInput"></div>
+          <button id="dashDownloadBtn" class="btn" style="padding: 6px 16px; margin-left: auto; background: var(--bg-medium); border: 1px solid var(--border); color: var(--text-secondary);">CSV 다운로드</button>
+        </div>
+        <div id="statsTableWrap" style="color: var(--text-muted);">로딩 중...</div>
       </div>
     `;
     return el;
   }
 
   async afterRender() {
+    document.getElementById('modeMonthly').addEventListener('click', () => this._setMode('monthly'));
+    document.getElementById('modeWeekly').addEventListener('click', () => this._setMode('weekly'));
+    document.getElementById('dashDownloadBtn').addEventListener('click', () => this._downloadCSV());
+    this._renderDateInput();
+    await this._loadTable();
+  }
+
+  _renderDateInput() {
+    const wrap = document.getElementById('dashDateInput');
+    if (this._mode === 'monthly') {
+      const curMonth = new Date().toISOString().slice(0, 7);
+      wrap.innerHTML = `<input type="month" id="dashPicker" value="${curMonth}" style="padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-medium); color: var(--text-primary); font-size: 14px;">`;
+    } else {
+      const curWeek = this._getCurrentWeekValue();
+      wrap.innerHTML = `<input type="week" id="dashPicker" value="${curWeek}" style="padding: 6px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-medium); color: var(--text-primary); font-size: 14px;">`;
+    }
+    document.getElementById('dashPicker').addEventListener('change', () => this._loadTable());
+  }
+
+  _setMode(mode) {
+    this._mode = mode;
+    const btnMonthly = document.getElementById('modeMonthly');
+    const btnWeekly = document.getElementById('modeWeekly');
+    if (mode === 'monthly') {
+      btnMonthly.style.background = 'var(--accent-cyan)'; btnMonthly.style.color = '#000';
+      btnWeekly.style.background = 'var(--bg-medium)'; btnWeekly.style.color = 'var(--text-secondary)';
+    } else {
+      btnWeekly.style.background = 'var(--accent-cyan)'; btnWeekly.style.color = '#000';
+      btnMonthly.style.background = 'var(--bg-medium)'; btnMonthly.style.color = 'var(--text-secondary)';
+    }
+    this._renderDateInput();
+    this._loadTable();
+  }
+
+  _getCurrentWeekValue() {
+    const now = new Date();
+    const day = now.getDay() || 7;
+    const mon = new Date(now); mon.setDate(now.getDate() - day + 1);
+    const year = mon.getFullYear();
+    // ISO week number
+    const jan4 = new Date(year, 0, 4);
+    const startW1 = new Date(jan4); startW1.setDate(jan4.getDate() - ((jan4.getDay() || 7) - 1));
+    const week = Math.round((mon - startW1) / 604800000) + 1;
+    return `${year}-W${String(week).padStart(2, '0')}`;
+  }
+
+  _weekToRange(weekValue) {
+    const [yearStr, wStr] = weekValue.split('-W');
+    const year = parseInt(yearStr), week = parseInt(wStr);
+    const jan4 = new Date(year, 0, 4);
+    const startW1 = new Date(jan4); startW1.setDate(jan4.getDate() - ((jan4.getDay() || 7) - 1));
+    const monday = new Date(startW1); monday.setDate(startW1.getDate() + (week - 1) * 7);
+    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+    const fmt = d => d.toISOString().slice(0, 10);
+    const mmdd = d => `${d.getMonth()+1}/${d.getDate()}`;
+    return { start: fmt(monday), end: fmt(sunday), label: `${year}년 ${week}주차 (${mmdd(monday)}~${mmdd(sunday)})` };
+  }
+
+  _getDateRange() {
+    const val = document.getElementById('dashPicker')?.value;
+    if (!val) return null;
+    if (this._mode === 'monthly') {
+      const [y, m] = val.split('-');
+      const last = new Date(+y, +m, 0).getDate();
+      return { start: `${val}-01`, end: `${val}-${String(last).padStart(2,'0')}`, label: `${y}년 ${m}월` };
+    } else {
+      return this._weekToRange(val);
+    }
+  }
+
+  async _loadTable() {
+    const wrap = document.getElementById('statsTableWrap');
+    const range = this._getDateRange();
+    if (!range) return;
+    wrap.innerHTML = '<span style="color:var(--text-muted)">로딩 중...</span>';
     try {
-      const stats = await window.api.getUserStatistics();
-      document.getElementById('dashStats').innerHTML = `
-        <div class="stat-card blue">
-          <div class="card-value">${stats.total || 0}</div>
-          <div class="card-label">전체 사용자</div>
-        </div>
-        <div class="stat-card green">
-          <div class="card-value">${stats.active || 0}</div>
-          <div class="card-label">활성</div>
-        </div>
-        <div class="stat-card" style="background: var(--card-bg);">
-          <div class="card-value" style="color: var(--warning);">${stats.suspended || 0}</div>
-          <div class="card-label">일시정지</div>
-        </div>
-        <div class="stat-card red">
-          <div class="card-value">${stats.terminated || 0}</div>
-          <div class="card-label">종결</div>
+      const rows = this._mode === 'monthly'
+        ? await window.api.getMonthlyStats(document.getElementById('dashPicker').value)
+        : await window.api.getPeriodStats(range.start, range.end);
+      this._lastRows = rows || [];
+      this._label = range.label;
+      if (!rows || rows.length === 0) {
+        wrap.innerHTML = '<span style="color:var(--text-muted)">해당 기간에 이용 데이터가 없습니다.</span>';
+        return;
+      }
+      const totals = rows.reduce((a, r) => ({ t: a.t + r.total_count, n: a.n + r.normal_count, p: a.p + r.porridge_count }), { t: 0, n: 0, p: 0 });
+      wrap.innerHTML = `
+        <div style="overflow-x: auto;">
+          <table class="data-table" style="width: 100%;">
+            <thead><tr>
+              <th style="width:60px">번호</th><th>이름</th><th style="width:100px">총 이용</th><th style="width:100px">일반식</th><th style="width:100px">죽식</th>
+            </tr></thead>
+            <tbody>
+              ${rows.map(r => `<tr><td>${r.number}</td><td>${r.name}</td><td style="text-align:center">${r.total_count}</td><td style="text-align:center">${r.normal_count}</td><td style="text-align:center">${r.porridge_count}</td></tr>`).join('')}
+            </tbody>
+            <tfoot><tr style="font-weight:600; border-top: 2px solid var(--border);">
+              <td colspan="2" style="text-align:center">합계 (${rows.length}명)</td>
+              <td style="text-align:center">${totals.t}</td><td style="text-align:center">${totals.n}</td><td style="text-align:center">${totals.p}</td>
+            </tr></tfoot>
+          </table>
         </div>
       `;
-      document.getElementById('dashContent').textContent = '통계 대시보드가 로드되었습니다. (차트 기능은 추후 업데이트)';
     } catch (e) {
-      document.getElementById('dashContent').textContent = `오류: ${e.message}`;
+      wrap.innerHTML = `<span style="color:var(--error)">오류: ${e.message}</span>`;
     }
+  }
+
+  _downloadCSV() {
+    if (!this._lastRows || this._lastRows.length === 0) return;
+    const BOM = '\uFEFF';
+    const header = '번호,이름,총 이용,일반식,죽식';
+    const body = this._lastRows.map(r => `${r.number},${r.name},${r.total_count},${r.normal_count},${r.porridge_count}`).join('\n');
+    const blob = new Blob([BOM + header + '\n' + body], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `이용현황_${this._label}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   cleanup() { }

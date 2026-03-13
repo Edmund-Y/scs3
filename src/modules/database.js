@@ -221,7 +221,7 @@ class DatabaseManager {
 
   // ==================== 사용자 CRUD ====================
 
-  addUser(number, name, notes) {
+  addUser(number, name, notes, cardNumber) {
     try {
       const existing = this._queryOne(
         `SELECT id, status FROM users WHERE number = ? AND status IN ('active', 'suspended')`,
@@ -234,7 +234,17 @@ class DatabaseManager {
 
       this._run(`INSERT INTO users (number, name, notes) VALUES (?, ?, ?)`, [number, name, notes || null]);
       const row = this._queryOne(`SELECT last_insert_rowid() as id`);
-      return { success: true, message: '사용자 추가 성공', userId: row.id };
+      const userId = row.id;
+
+      // 카드 번호가 있으면 카드 추가
+      if (cardNumber) {
+        const cardResult = this.addCard(userId, cardNumber);
+        if (!cardResult.success) {
+          return { success: true, message: `사용자는 추가되었으나 카드 추가 실패: ${cardResult.message}`, userId };
+        }
+      }
+
+      return { success: true, message: '사용자 추가 성공', userId };
     } catch (e) {
       return { success: false, message: `사용자 추가 실패: ${e.message}`, userId: null };
     }
@@ -441,6 +451,80 @@ class DatabaseManager {
     return this._queryAll(`SELECT id, user_id, card_number, is_active, created_at, deactivated_at FROM cards WHERE user_id = ? ORDER BY created_at DESC`, [userId]);
   }
 
+  getCardOwnerInfo(cardNumber) {
+    return this._queryOne(`
+      SELECT u.id, u.number, u.name, u.status
+      FROM users u JOIN cards c ON u.id = c.user_id
+      WHERE c.card_number = ? AND c.deactivated_at IS NULL AND u.status IN ('active', 'suspended')
+    `, [cardNumber]);
+  }
+
+  reissueCard(userId, newCardNumber, reason = '카드 재발급') {
+    try {
+      // 기존 활성 카드 비활성화
+      const oldCards = this._queryAll(
+        `SELECT id FROM cards WHERE user_id = ? AND deactivated_at IS NULL`, [userId]
+      );
+      for (const card of oldCards) {
+        this._run(
+          `UPDATE cards SET deactivated_at = datetime('now','localtime'), reissue_reason = ? WHERE id = ?`,
+          [reason, card.id]
+        );
+      }
+      // 새 카드 추가
+      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [userId, newCardNumber]);
+      return { success: true, message: '카드가 재발급되었습니다' };
+    } catch (e) {
+      return { success: false, message: `카드 재발급 실패: ${e.message}` };
+    }
+  }
+
+  transferCard(cardNumber, targetUserId, reason = '카드 이전') {
+    try {
+      const ownerInfo = this.getCardOwnerInfo(cardNumber);
+      if (!ownerInfo) return { success: false, message: '카드의 현재 소유자를 찾을 수 없습니다' };
+      if (ownerInfo.id === targetUserId) return { success: false, message: '자기 자신에게 카드를 이전할 수 없습니다' };
+
+      // 기존 소유자의 해당 카드 비활성화
+      const oldCard = this._queryOne(
+        `SELECT id FROM cards WHERE user_id = ? AND card_number = ? AND deactivated_at IS NULL`,
+        [ownerInfo.id, cardNumber]
+      );
+      if (oldCard) {
+        this._run(
+          `UPDATE cards SET deactivated_at = datetime('now','localtime'), reissue_reason = ? WHERE id = ?`,
+          [`카드 이전: ${reason}`, oldCard.id]
+        );
+      }
+
+      // 대상 사용자의 기존 활성 카드 비활성화
+      const targetOldCards = this._queryAll(
+        `SELECT id FROM cards WHERE user_id = ? AND deactivated_at IS NULL`, [targetUserId]
+      );
+      for (const card of targetOldCards) {
+        this._run(
+          `UPDATE cards SET deactivated_at = datetime('now','localtime'), reissue_reason = ? WHERE id = ?`,
+          ['카드 이전으로 교체', card.id]
+        );
+      }
+
+      // 새 소유자에게 카드 배정
+      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [targetUserId, cardNumber]);
+      return { success: true, message: '카드가 성공적으로 이전되었습니다' };
+    } catch (e) {
+      return { success: false, message: `카드 이전 실패: ${e.message}` };
+    }
+  }
+
+  deleteCardsForUser(userId) {
+    try {
+      this._run(`DELETE FROM cards WHERE user_id = ?`, [userId]);
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: e.message };
+    }
+  }
+
   // ==================== 이벤트/체크인 ====================
 
   checkIn(userId, menuType, inputMethod, notes) {
@@ -612,6 +696,18 @@ class DatabaseManager {
     }
   }
 
+  updateSpecialRemark(remarkId, name, description, isActive) {
+    try {
+      const existing = this._queryOne(`SELECT id FROM special_remarks WHERE name = ? AND id != ?`, [name, remarkId]);
+      if (existing) return { success: false, message: `이미 존재하는 이름입니다: ${name}` };
+      this._run(`UPDATE special_remarks SET name = ?, description = ?, is_active = ? WHERE id = ?`,
+        [name, description || null, isActive ? 1 : 0, remarkId]);
+      return { success: true, message: '특이사항 수정 성공' };
+    } catch (e) {
+      return { success: false, message: `특이사항 수정 실패: ${e.message}` };
+    }
+  }
+
   deleteSpecialRemark(remarkId) {
     try {
       this._run(`DELETE FROM user_special_remarks WHERE remark_id = ?`, [remarkId]);
@@ -671,8 +767,49 @@ class DatabaseManager {
       )
       SELECT ums.user_id, u.number, u.name, ums.total_count, ums.normal_count, ums.porridge_count
       FROM user_monthly_stats ums JOIN users u ON ums.user_id = u.id
-      WHERE u.deleted_at IS NULL ORDER BY ums.total_count DESC, u.number
+      WHERE u.deleted_at IS NULL ORDER BY ums.total_count DESC, CAST(u.number AS INTEGER), u.number
     `, [yearMonth]);
+  }
+
+  getPeriodStats(startDate, endDate) {
+    return this._queryAll(`
+      WITH daily_user_menu AS (
+        SELECT user_id, DATE(created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END), MAX(CASE WHEN event_type = 'check_in' THEN menu_type END))
+          END as final_menu
+        FROM events WHERE DATE(created_at) BETWEEN ? AND ? GROUP BY user_id, DATE(created_at)
+      ),
+      user_period_stats AS (
+        SELECT user_id, COUNT(*) as total_count,
+          SUM(CASE WHEN final_menu = '일반식' THEN 1 ELSE 0 END) as normal_count,
+          SUM(CASE WHEN final_menu = '죽식' THEN 1 ELSE 0 END) as porridge_count
+        FROM daily_user_menu WHERE final_menu IS NOT NULL GROUP BY user_id
+      )
+      SELECT ups.user_id, u.number, u.name, ups.total_count, ups.normal_count, ups.porridge_count
+      FROM user_period_stats ups JOIN users u ON ups.user_id = u.id
+      WHERE u.deleted_at IS NULL ORDER BY ups.total_count DESC, CAST(u.number AS INTEGER), u.number
+    `, [startDate, endDate]);
+  }
+
+  getDailyRangeStats(startDate, endDate) {
+    return this._queryAll(`
+      WITH daily_user_menu AS (
+        SELECT user_id, DATE(created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END), MAX(CASE WHEN event_type = 'check_in' THEN menu_type END))
+          END as final_menu
+        FROM events WHERE DATE(created_at) BETWEEN ? AND ? GROUP BY user_id, DATE(created_at)
+      )
+      SELECT event_date as date,
+        COUNT(*) as total,
+        SUM(CASE WHEN final_menu = '일반식' THEN 1 ELSE 0 END) as normal,
+        SUM(CASE WHEN final_menu = '죽식' THEN 1 ELSE 0 END) as porridge
+      FROM daily_user_menu WHERE final_menu IS NOT NULL
+      GROUP BY event_date ORDER BY event_date
+    `, [startDate, endDate]);
   }
 
   getAllUsersWeekdayUsage(startDate, endDate) {

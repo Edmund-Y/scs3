@@ -7,6 +7,9 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+// 날짜/주 입력 달력의 시작 요일을 월요일로 설정 (한국 로케일)
+app.commandLine.appendSwitch('lang', 'ko-KR');
+
 // 모듈 임포트
 const { DatabaseManager } = require('./src/modules/database');
 const { ConfigManager } = require('./src/modules/config');
@@ -138,7 +141,7 @@ ipcMain.handle('db:getUserById', (_, userId) => db.getUserById(userId));
 ipcMain.handle('db:getUserByNumber', (_, number) => db.getUserByNumber(number));
 ipcMain.handle('db:getUserByCardNumber', (_, cardNumber) => db.getUserByCardNumber(cardNumber));
 
-ipcMain.handle('db:addUser', (_, number, name, notes) => db.addUser(number, name, notes));
+ipcMain.handle('db:addUser', (_, number, name, notes, cardNumber) => db.addUser(number, name, notes, cardNumber));
 ipcMain.handle('db:updateUser', (_, userId, name, notes) => db.updateUser(userId, name, notes));
 ipcMain.handle('db:suspendUser', (_, userId) => db.suspendUser(userId));
 ipcMain.handle('db:terminateUser', (_, userId) => db.terminateUser(userId));
@@ -149,6 +152,10 @@ ipcMain.handle('db:addCard', (_, userId, cardNumber) => db.addCard(userId, cardN
 ipcMain.handle('db:deactivateCard', (_, cardId, reason) => db.deactivateCard(cardId, reason));
 ipcMain.handle('db:getActiveCard', (_, userId) => db.getActiveCard(userId));
 ipcMain.handle('db:getCardHistory', (_, userId) => db.getCardHistory(userId));
+ipcMain.handle('db:getCardOwnerInfo', (_, cardNumber) => db.getCardOwnerInfo(cardNumber));
+ipcMain.handle('db:reissueCard', (_, userId, newCardNumber, reason) => db.reissueCard(userId, newCardNumber, reason));
+ipcMain.handle('db:transferCard', (_, cardNumber, targetUserId, reason) => db.transferCard(cardNumber, targetUserId, reason));
+ipcMain.handle('db:deleteCardsForUser', (_, userId) => db.deleteCardsForUser(userId));
 
 // 이벤트/체크인
 ipcMain.handle('db:checkIn', (_, userId, menuType, inputMethod, notes) => {
@@ -167,6 +174,7 @@ ipcMain.handle('db:getAllSpecialRemarks', () => db.getAllSpecialRemarks());
 ipcMain.handle('db:addSpecialRemark', (_, name, desc, order, start, end, active) => {
   return db.addSpecialRemark(name, desc, order, start, end, active);
 });
+ipcMain.handle('db:updateSpecialRemark', (_, id, name, desc, isActive) => db.updateSpecialRemark(id, name, desc, isActive));
 ipcMain.handle('db:deleteSpecialRemark', (_, remarkId) => db.deleteSpecialRemark(remarkId));
 ipcMain.handle('db:getUsersForRemark', (_, remarkId) => db.getUsersForRemark(remarkId));
 ipcMain.handle('db:assignRemark', (_, userId, remarkId) => db.assignRemark(userId, remarkId));
@@ -175,6 +183,12 @@ ipcMain.handle('db:unassignRemark', (_, userId, remarkId) => db.unassignRemark(u
 // 통계
 ipcMain.handle('db:getUserStatistics', () => db.getUserStatistics());
 ipcMain.handle('db:getMonthlyStats', (_, yearMonth) => db.getMonthlyStats(yearMonth));
+ipcMain.handle('db:getPeriodStats', (_, startDate, endDate) => {
+  return db.getPeriodStats(startDate, endDate);
+});
+ipcMain.handle('db:getDailyRangeStats', (_, startDate, endDate) => {
+  return db.getDailyRangeStats(startDate, endDate);
+});
 ipcMain.handle('db:getAllUsersWeekdayUsage', (_, startDate, endDate) => {
   return db.getAllUsersWeekdayUsage(startDate, endDate);
 });

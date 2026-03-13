@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('api', {
   getUserById: (id) => ipcRenderer.invoke('db:getUserById', id),
   getUserByNumber: (n) => ipcRenderer.invoke('db:getUserByNumber', n),
   getUserByCardNumber: (c) => ipcRenderer.invoke('db:getUserByCardNumber', c),
-  addUser: (num, name, notes) => ipcRenderer.invoke('db:addUser', num, name, notes),
+  addUser: (num, name, notes, cardNumber) => ipcRenderer.invoke('db:addUser', num, name, notes, cardNumber),
   updateUser: (id, name, notes) => ipcRenderer.invoke('db:updateUser', id, name, notes),
   suspendUser: (id) => ipcRenderer.invoke('db:suspendUser', id),
   terminateUser: (id) => ipcRenderer.invoke('db:terminateUser', id),
@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld('api', {
   deactivateCard: (cid, reason) => ipcRenderer.invoke('db:deactivateCard', cid, reason),
   getActiveCard: (uid) => ipcRenderer.invoke('db:getActiveCard', uid),
   getCardHistory: (uid) => ipcRenderer.invoke('db:getCardHistory', uid),
+  getCardOwnerInfo: (cn) => ipcRenderer.invoke('db:getCardOwnerInfo', cn),
+  reissueCard: (uid, cn, reason) => ipcRenderer.invoke('db:reissueCard', uid, cn, reason),
+  transferCard: (cn, targetUid, reason) => ipcRenderer.invoke('db:transferCard', cn, targetUid, reason),
+  deleteCardsForUser: (uid) => ipcRenderer.invoke('db:deleteCardsForUser', uid),
 
   // --- 체크인/이벤트 ---
   checkIn: (uid, menu, method, notes) => ipcRenderer.invoke('db:checkIn', uid, menu, method, notes),
@@ -43,6 +47,7 @@ contextBridge.exposeInMainWorld('api', {
   // --- 특이사항 ---
   getAllSpecialRemarks: () => ipcRenderer.invoke('db:getAllSpecialRemarks'),
   addSpecialRemark: (...a) => ipcRenderer.invoke('db:addSpecialRemark', ...a),
+  updateSpecialRemark: (id, name, desc, isActive) => ipcRenderer.invoke('db:updateSpecialRemark', id, name, desc, isActive),
   deleteSpecialRemark: (id) => ipcRenderer.invoke('db:deleteSpecialRemark', id),
   getUsersForRemark: (id) => ipcRenderer.invoke('db:getUsersForRemark', id),
   assignRemark: (uid, rid) => ipcRenderer.invoke('db:assignRemark', uid, rid),
@@ -51,6 +56,8 @@ contextBridge.exposeInMainWorld('api', {
   // --- 통계 ---
   getUserStatistics: () => ipcRenderer.invoke('db:getUserStatistics'),
   getMonthlyStats: (ym) => ipcRenderer.invoke('db:getMonthlyStats', ym),
+  getPeriodStats: (s, e) => ipcRenderer.invoke('db:getPeriodStats', s, e),
+  getDailyRangeStats: (s, e) => ipcRenderer.invoke('db:getDailyRangeStats', s, e),
   getAllUsersWeekdayUsage: (s, e) => ipcRenderer.invoke('db:getAllUsersWeekdayUsage', s, e),
   getDeletedUsers: (s) => ipcRenderer.invoke('db:getDeletedUsers', s),
 
