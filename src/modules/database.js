@@ -24,8 +24,7 @@ class DatabaseManager {
     } else {
       this.db = new this.sqljs.Database();
     }
-    // WAL 모드 (sql.js는 인메모리이므로 파일 저장 직접 관리)
-    this.db.run('PRAGMA journal_mode = WAL');
+    await this.createTables();
     this._ensureIndices();
   }
 
@@ -201,6 +200,26 @@ class DatabaseManager {
       ['log_retention_days', '30', 'logging', '로그 보관 기간 (일)'],
       ['max_search_results', '30', 'general', '검색 결과 표시 개수'],
       ['max_search_results_chosung', '100', 'general', '초성 검색 결과 표시 개수'],
+      // 체크인 동작
+      ['duplicate_window_minutes', '5', 'checkin', '중복 판정 시간 (분)'],
+      ['checkin_auto_clear_seconds', '3', 'checkin', '체크인 알림 표시 시간 (초)'],
+      ['default_menu_type', '일반식', 'checkin', '기본 식사 유형'],
+      ['checkin_sound_enabled', '1', 'checkin', '체크인 효과음'],
+      ['checkin_sound_duplicate', '1', 'checkin', '중복 경고음'],
+      // TTS 확장
+      ['tts_read_unregistered', '1', 'tts', '미등록자 안내 읽기'],
+      ['tts_read_recent_duplicate', '1', 'tts', '단시간 중복 안내 읽기'],
+      ['tts_custom_checkin_msg', '', 'tts', '체크인 사용자 정의 멘트'],
+      ['tts_custom_duplicate_msg', '', 'tts', '중복 사용자 정의 멘트'],
+      // 화면 표시
+      ['ui_font_size', '14', 'display', '기본 글꼴 크기 (px)'],
+      ['ui_fullscreen_on_start', '0', 'display', '시작 시 전체 화면'],
+      ['ui_show_user_number', '1', 'display', '이용 현황에 번호 표시'],
+      ['ui_usage_list_max', '50', 'display', '이용 현황 표시 개수'],
+      ['ui_show_ticket_button', '1', 'display', '식권 버튼 표시'],
+      // 데이터/내보내기
+      ['export_include_ticket', '1', 'export', '내보내기에 식권 포함'],
+      ['export_encoding', 'UTF-8', 'export', 'CSV 인코딩'],
     ];
 
     for (const [key, value, category, desc] of defaults) {
@@ -527,25 +546,25 @@ class DatabaseManager {
 
   // ==================== 이벤트/체크인 ====================
 
-  checkIn(userId, menuType, inputMethod, notes) {
+  checkIn(userId, menuType, inputMethod, notes, duplicateWindowMinutes = 5) {
     try {
-      console.log(`[DB:checkIn] userId=${userId}, menuType=${menuType}, inputMethod=${inputMethod}`);
+      console.log(`[DB:checkIn] userId=${userId}, menuType=${menuType}, inputMethod=${inputMethod}, dupWindow=${duplicateWindowMinutes}`);
 
-      // 5분 이내 중복 체크
+      // N분 이내 중복 체크
       const recentCheckin = this._queryOne(`
         SELECT id FROM events
-        WHERE user_id = ? 
-          AND event_type = 'check_in' 
-          AND created_at >= datetime('now', 'localtime', '-5 minutes')
-      `, [userId]);
+        WHERE user_id = ?
+          AND event_type = 'check_in'
+          AND created_at >= datetime('now', 'localtime', '-' || ? || ' minutes')
+      `, [userId, duplicateWindowMinutes]);
 
       if (recentCheckin) {
-        console.log(`[DB:checkIn] 5분 이내 중복 시도 차단: userId=${userId}`);
+        console.log(`[DB:checkIn] ${duplicateWindowMinutes}분 이내 중복 시도 차단: userId=${userId}`);
         const countRow = this._queryOne(`
           SELECT COUNT(*) as count FROM events
           WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')
         `, [userId]);
-        return { success: true, count: countRow ? countRow.count : 1, isRecentDuplicate: true, message: '5분 이내 중복입니다.' };
+        return { success: true, count: countRow ? countRow.count : 1, isRecentDuplicate: true, duplicateWindowMinutes, message: `${duplicateWindowMinutes}분 이내 중복입니다.` };
       }
 
       this._run(`INSERT INTO events (user_id, event_type, menu_type, input_method, notes) VALUES (?, 'check_in', ?, ?, ?)`,
@@ -573,6 +592,41 @@ class DatabaseManager {
     } catch (e) {
       console.error(`[DB:checkIn] 실패:`, e.message);
       return { success: false, count: 0, error: e.message };
+    }
+  }
+
+  addTicket() {
+    try {
+      let ticketUser = this._queryOne(`SELECT * FROM users WHERE number = 'TICKET'`);
+      if (!ticketUser) {
+        this._run(`INSERT INTO users (number, name, notes) VALUES ('TICKET', '식권구매', '시스템 사용자')`);
+        ticketUser = this._queryOne(`SELECT * FROM users WHERE number = 'TICKET'`);
+      }
+      this._run(`INSERT INTO events (user_id, event_type, menu_type, input_method) VALUES (?, 'check_in', '식권', 'ticket')`, [ticketUser.id]);
+      const insertRow = this._queryOne(`SELECT last_insert_rowid() as id`);
+      const eventInfo = this._queryOne(`SELECT e.*, u.number, u.name FROM events e JOIN users u ON e.user_id = u.id WHERE e.id = ?`, [insertRow.id]);
+      const countRow = this._queryOne(`SELECT COUNT(*) as count FROM events WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')`, [ticketUser.id]);
+      return { success: true, count: countRow ? countRow.count : 1, event: eventInfo };
+    } catch (e) {
+      return { success: false, message: e.message };
+    }
+  }
+
+  cancelLastTicket() {
+    try {
+      const ticketUser = this._queryOne(`SELECT id FROM users WHERE number = 'TICKET'`);
+      if (!ticketUser) return { success: false, message: '식권 사용자를 찾을 수 없습니다.' };
+      const lastEvent = this._queryOne(`
+        SELECT id FROM events
+        WHERE user_id = ? AND event_type = 'check_in' AND input_method = 'ticket'
+          AND DATE(created_at) = DATE('now','localtime')
+        ORDER BY id DESC LIMIT 1
+      `, [ticketUser.id]);
+      if (!lastEvent) return { success: false, message: '취소할 식권 기록이 없습니다.' };
+      this._run(`UPDATE events SET event_type = 'cancel' WHERE id = ?`, [lastEvent.id]);
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: e.message };
     }
   }
 

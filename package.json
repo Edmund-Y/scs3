@@ -1,11 +1,11 @@
 {
   "name": "korea-restaurant",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "경로식당 이용자 관리 프로그램",
   "main": "main.js",
   "scripts": {
     "start": "chcp 65001 > nul && electron .",
-    "build": "electron-builder build --win"
+    "build": "electron-builder build --win --publish always"
   },
   "build": {
     "productName": "경로식당",
@@ -19,12 +19,19 @@
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "icon.ico",
       "installerHeaderIcon": "icon.ico",
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
-      "shortcutName": "경로식당"
+      "shortcutName": "경로식당",
+      "include": "installer.nsh"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "Edmund-Y",
+      "repo": "scs3",
+      "releaseType": "release"
     }
   },
-  "author": "",
+  "author": "DongYoun, Lee <admin@moonlight.one>",
   "license": "UNLICENSED",
   "devDependencies": {
     "electron": "^33.0.0",
@@ -32,6 +39,7 @@
   },
   "dependencies": {
     "chart.js": "^4.5.1",
+    "electron-updater": "^6.8.3",
     "sql.js": "^1.11.0"
   }
 }

@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('api', {
   getTodayEvents: () => ipcRenderer.invoke('db:getTodayEvents'),
   getUserTodayCount: (uid) => ipcRenderer.invoke('db:getUserTodayCount', uid),
   getTicketUser: () => ipcRenderer.invoke('db:getTicketUser'),
+  addTicket: () => ipcRenderer.invoke('db:addTicket'),
+  cancelLastTicket: () => ipcRenderer.invoke('db:cancelLastTicket'),
 
   // --- 특이사항 ---
   getAllSpecialRemarks: () => ipcRenderer.invoke('db:getAllSpecialRemarks'),

@@ -294,53 +294,66 @@ class CountPage {
     el.className = 'fade-in';
     el.style.cssText = 'display: flex; flex-direction: column; height: 100%; overflow: hidden;';
     el.innerHTML = `
-      <div class="grid-4" style="margin-bottom: 16px; flex-shrink: 0;">
-        <div class="stat-card cyan">
+      <div class="count-stats-row">
+        <div class="stat-card cyan count-stat-clock">
           <div class="card-icon">🕐</div>
-          <div class="card-value" id="countClock" style="font-size: 32px;">--:--:--</div>
+          <div class="card-value" id="countClock">--:--:--</div>
           <div class="card-label">현재 시각</div>
         </div>
-        <div class="stat-card blue">
+        <div class="stat-card blue count-stat-total">
           <div class="card-icon">👥</div>
           <div class="card-value" id="countTotal">0</div>
           <div class="card-label">총 이용</div>
         </div>
-        <div class="stat-card green" style="display: flex; flex-direction: column; align-items: center; justify-content: center;">
-          <div class="card-icon">🍚</div>
-          <div class="card-value" style="font-size: 24px;">
-            <span id="countNormal" style="color: var(--chart-green);">0</span>
-            <span style="color: var(--text-muted); font-size: 14px; margin: 0 8px;">|</span>
-            <span id="countPorridge" style="color: var(--chart-red);">0</span>
+        <div class="stat-card green count-stat-meal">
+          <div class="meal-counts">
+            <div class="meal-item">
+              <span class="meal-value" id="countNormal">0</span>
+              <span class="meal-label">일반식</span>
+            </div>
+            <span class="meal-divider">|</span>
+            <div class="meal-item">
+              <span class="meal-value porridge" id="countPorridge">0</span>
+              <span class="meal-label">죽식</span>
+            </div>
           </div>
-          <div class="card-label">일반식 | 죽식</div>
-          <!-- 일괄 죽식 토글 -->
-          <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
-            <span style="font-size: 11px; font-weight: 700; color: var(--chart-red);">일괄 죽식</span>
-            <label class="switch" style="transform: scale(0.8);">
+          <div class="porridge-toggle-row">
+            <span>일괄 죽식</span>
+            <label class="switch" style="transform: scale(0.85);">
               <input type="checkbox" id="toggleAllPorridge">
               <span class="slider round"></span>
             </label>
           </div>
         </div>
-        <div class="stat-card purple">
-          <div class="card-icon">🎫</div>
-          <div class="card-value" id="countTicket">0</div>
-          <div class="card-label">식권</div>
+        <div class="stat-card purple count-stat-ticket">
+          <div class="ticket-header">🎫 식권</div>
+          <div class="ticket-controls">
+            <button id="ticketMinus" class="ticket-btn">−</button>
+            <div class="card-value" id="countTicket">0</div>
+            <button id="ticketPlus" class="ticket-btn ticket-btn-plus">+</button>
+          </div>
         </div>
       </div>
 
-      <div style="display: grid; grid-template-columns: 7fr 3fr; gap: 16px; flex: 1; min-height: 0;">
-        <div style="background: var(--card-bg); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; min-height: 0;">
-          <h3 class="section-title" style="flex-shrink: 0;">오늘의 이용 현황</h3>
-          <div id="usageList" style="flex: 1; overflow-y: auto; min-height: 0;"></div>
-        </div>
-        <div class="search-panel" style="display: flex; flex-direction: column; min-height: 0;">
-          <h3 style="font-weight: 600; margin-bottom: 8px; flex-shrink: 0;">사용자 검색</h3>
-          <div class="search-input-wrapper" style="flex-shrink: 0;">
-            <span class="search-icon">🔍</span>
-            <input class="input" id="countSearch" placeholder="번호 또는 이름 검색..." />
+      <div class="count-main-area">
+        <div class="count-panel">
+          <div class="count-panel-header">
+            <h3>오늘의 이용 현황</h3>
+            <span class="count-panel-badge" id="countListBadge">0</span>
           </div>
-          <div id="countSearchResults" class="search-results" style="flex: 1; overflow-y: auto; min-height: 0; margin-top: 8px;"></div>
+          <div id="usageList"></div>
+        </div>
+        <div class="count-panel">
+          <div class="count-panel-header">
+            <h3>사용자 체크인</h3>
+          </div>
+          <div class="count-search-body">
+            <div class="count-search-input-wrap">
+              <span class="search-icon">🔍</span>
+              <input class="input" id="countSearch" placeholder="번호 또는 이름..." />
+            </div>
+            <div id="countSearchResults"></div>
+          </div>
         </div>
       </div>
     `;
@@ -348,6 +361,47 @@ class CountPage {
   }
 
   async afterRender() {
+    // 런타임 설정 적용
+    try {
+      const allSettings = await window.api.getAllSettings();
+      // 글꼴 크기
+      const fontSize = parseInt(allSettings.ui_font_size || '14', 10);
+      if (fontSize && fontSize !== 14) {
+        document.documentElement.style.fontSize = fontSize + 'px';
+      }
+      // 식권 버튼 표시/숨김
+      if (allSettings.ui_show_ticket_button === '0') {
+        const ticketCard = document.querySelector('.stat-card.purple');
+        if (ticketCard) ticketCard.style.display = 'none';
+      }
+    } catch (e) { /* fallback */ }
+
+    // 식권 +/- 버튼
+    document.getElementById('ticketPlus')?.addEventListener('click', async () => {
+      try {
+        const result = await window.api.addTicket();
+        if (result.success) {
+          if (result.event) {
+            this._appendSingleEventToUI(result.event, false);
+            await this._updateStatsUIOnly();
+          } else {
+            await this._refreshData();
+          }
+        }
+      } catch (e) { app.showToast('식권 추가 오류: ' + e.message, 'error'); }
+    });
+    document.getElementById('ticketMinus')?.addEventListener('click', async () => {
+      try {
+        const result = await window.api.cancelLastTicket();
+        if (result.success) {
+          app.showToast('식권 1건 취소되었습니다', 'warning');
+          await this._refreshData();
+        } else {
+          app.showToast(result.message || '취소할 식권이 없습니다', 'error');
+        }
+      } catch (e) { app.showToast('식권 취소 오류: ' + e.message, 'error'); }
+    });
+
     // Event Delegation for Action Buttons (Attach immediately to avoid async race conditions)
     const usageListContainer = document.getElementById('usageList');
     if (usageListContainer) {
@@ -424,7 +478,7 @@ class CountPage {
     try {
       await this._updateStatsUIOnly();
       const events = await window.api.getTodayEvents();
-      this._renderEvents(events);
+      await this._renderEvents(events);
     } catch (e) {
       console.error('Refresh error:', e);
     }
@@ -439,6 +493,7 @@ class CountPage {
       if (el('countNormal')) el('countNormal').textContent = stats.normal || 0;
       if (el('countPorridge')) el('countPorridge').textContent = stats.porridge || 0;
       if (el('countTicket')) el('countTicket').textContent = stats.ticket || 0;
+      if (el('countListBadge')) el('countListBadge').textContent = total;
     } catch (e) {
       console.error('Stats UI update error:', e);
     }
@@ -491,7 +546,7 @@ class CountPage {
     container.insertAdjacentHTML('afterbegin', html);
   }
 
-  _renderEvents(events) {
+  async _renderEvents(events) {
     const container = document.getElementById('usageList');
     if (!container) return;
 
@@ -505,6 +560,15 @@ class CountPage {
       container.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">오늘의 이용 기록이 없습니다<br><span style="font-size: 12px;">우측 사용자 목록을 클릭하여 체크인하세요</span></p>';
       return;
     }
+
+    // 설정값 로드
+    let listMax = 50;
+    let showNumber = true;
+    try {
+      const allSettings = await window.api.getAllSettings();
+      listMax = parseInt(allSettings.ui_usage_list_max || '50', 10) || 50;
+      showNumber = allSettings.ui_show_user_number !== '0';
+    } catch (e) { /* fallback */ }
 
     // 중복 검사 (예전 이벤트부터 카운트)
     const reversedEvents = [...checkIns].reverse();
@@ -523,7 +587,7 @@ class CountPage {
 
     const displayEvents = reversedEvents.reverse();
 
-    const html = displayEvents.slice(0, 50).map(event => {
+    const html = displayEvents.slice(0, listMax).map(event => {
       const time = event.created_at ? event.created_at.split(' ')[1]?.slice(0, 8) : '';
       const isTicket = event.input_method === 'ticket';
       const isDuplicate = !!duplicateMap[event.id];
@@ -549,10 +613,12 @@ class CountPage {
         `;
       }
 
+      const nameDisplay = isTicket ? '🎫 식권' : (showNumber ? `${event.number || ''} ${event.name || ''}` : `${event.name || ''}`);
+
       return `
         <div class="${cls}">
           <span class="time">${time}</span>
-          <span class="name">${isTicket ? '🎫 식권' : `${event.number || ''} ${event.name || ''}`}</span>
+          <span class="name">${nameDisplay}</span>
           <div class="badge-col">${badge}</div>
           <div class="actions">
             ${actions}
@@ -564,7 +630,6 @@ class CountPage {
     const savedScrollTop = container.scrollTop;
     container.innerHTML = html;
 
-    // 복원 시 약간의 딜레이를 주어 렌더링 후 스크롤이 적용되도록 함
     setTimeout(() => {
       container.scrollTop = savedScrollTop;
     }, 0);
@@ -625,7 +690,7 @@ class CountPage {
       return;
     }
     container.innerHTML = `
-      <p style="color: var(--text-muted); font-size: 11px; padding: 4px 12px;">활성 사용자 ${users.length}명 — 클릭하여 체크인</p>
+      <p style="color: var(--text-muted); font-size: 11px; padding: 6px 10px 4px; letter-spacing: 0.3px;">활성 사용자 ${users.length}명</p>
     ` + users.map(u => `
       <div class="search-result-item" data-number="${u.number}">
         <span class="number">${u.number}</span>
@@ -661,58 +726,87 @@ class CountPage {
     }
   }
 
+  async _speak(text, { eventType = 'normal' } = {}) {
+    if (!window.speechSynthesis) return;
+    try {
+      const allSettings = await window.api.getAllSettings();
+      // 마스터 TTS on/off
+      if (allSettings.tts_enabled === '0' || allSettings.tts_enabled === 'false') return;
+
+      // eventType별 개별 on/off
+      const gateMap = {
+        normal: 'tts_read_normal',
+        porridge: 'tts_read_porridge',
+        duplicate: 'tts_read_duplicate',
+        unregistered: 'tts_read_unregistered',
+        recent_duplicate: 'tts_read_recent_duplicate',
+        remarks: 'tts_read_remarks',
+      };
+      const gateKey = gateMap[eventType];
+      if (gateKey && (allSettings[gateKey] === '0' || allSettings[gateKey] === 'false')) return;
+
+      // 익명화 적용 (김바보→김*보, 김밥→김*, 남궁바보→남궁*보)
+      if (allSettings.tts_anonymous === '1' || allSettings.tts_anonymous === 'true') {
+        text = text.replace(/([가-힣]{1,2})([가-힣]+)님/g, (_, head, tail) => {
+          if (tail.length === 1) return `${head}*님`;             // 2글자: 김밥→김*
+          const masked = '*'.repeat(tail.length - 1) + tail.slice(-1); // 3글자+: 김바보→김*보
+          return `${head}${masked}님`;
+        });
+      }
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'ko-KR';
+      utterance.rate = parseFloat(allSettings.tts_rate || '150') / 150;
+      utterance.volume = parseFloat(allSettings.tts_volume || '1.0');
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.error('TTS error:', e);
+    }
+  }
+
   async _processCheckIn(userNumber) {
     try {
       console.log(`[CountPage] 체크인 시도: userNumber=${userNumber}`);
+      const allSettings = await window.api.getAllSettings();
+      const autoClearMs = (parseFloat(allSettings.checkin_auto_clear_seconds || '3') * 1000);
+
       const user = await window.api.getUserByNumber(userNumber);
       console.log(`[CountPage] getUserByNumber 결과:`, user);
       if (!user) {
         console.warn(`[CountPage] 미등록 사용자: ${userNumber}`);
-        window.app.showToast('등록되지 않은 사용자입니다', 'error');
-        if (window.speechSynthesis) {
-          const u = new SpeechSynthesisUtterance('등록되지 않은 사용자입니다');
-          u.lang = 'ko-KR';
-          window.speechSynthesis.speak(u);
-        }
+        window.app.showToast('등록되지 않은 사용자입니다', 'error', autoClearMs);
+        this._speak('등록되지 않은 사용자입니다', { eventType: 'unregistered' });
         return;
       }
 
       const isAllPorridge = document.getElementById('toggleAllPorridge')?.checked;
-      const menuType = isAllPorridge ? '죽식' : '일반식';
+      const defaultMenu = allSettings.default_menu_type || '일반식';
+      const menuType = isAllPorridge ? '죽식' : defaultMenu;
 
       console.log(`[CountPage] checkIn 호출: userId=${user.id}, name=${user.name}, menuType=${menuType}`);
       const result = await window.api.checkIn(user.id, menuType, 'manual', null);
       console.log(`[CountPage] checkIn 결과:`, result);
       if (result.success) {
+        const dupWindow = result.duplicateWindowMinutes || 5;
         if (result.isRecentDuplicate) {
-          window.app.showToast(`${user.name}님 5분 이내 중복 시도입니다⚠️`, 'warning');
-          if (window.speechSynthesis) {
-            const u = new SpeechSynthesisUtterance(`${user.name}님 5분 이내 반복 수령 시도입니다`);
-            u.lang = 'ko-KR';
-            window.speechSynthesis.speak(u);
-          }
-          // DO NOT refresh data for recent duplicates
+          window.app.showToast(`${user.name}님 ${dupWindow}분 이내 중복 시도입니다`, 'warning', autoClearMs);
+          this._speak(`${user.name}님 ${dupWindow}분 이내 반복 수령 시도입니다`, { eventType: 'recent_duplicate' });
         } else {
           if (result.count > 1) {
-            window.app.showToast(`${user.name}님 ${menuType} 중복입니다⚠️`, 'warning');
+            const customDupMsg = allSettings.tts_custom_duplicate_msg;
+            window.app.showToast(`${user.name}님 ${menuType} 중복입니다`, 'warning', autoClearMs);
+            this._speak(customDupMsg || `${user.name}님 ${menuType} 중복입니다`, { eventType: 'duplicate' });
           } else {
-            window.app.showToast(`${user.name}님 확인되었습니다`, 'success');
-          }
-
-          if (window.speechSynthesis) {
-            const text = result.count > 1
-              ? `${user.name}님 ${menuType} 중복입니다`
-              : `${user.name}님 ${menuType} 첫 수령입니다`;
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = 'ko-KR';
-            window.speechSynthesis.speak(u);
+            const customMsg = allSettings.tts_custom_checkin_msg;
+            window.app.showToast(`${user.name}님 확인되었습니다`, 'success', autoClearMs);
+            const ttsEventType = menuType === '죽식' ? 'porridge' : 'normal';
+            this._speak(customMsg || `${user.name}님 ${menuType} 첫 수령입니다`, { eventType: ttsEventType });
           }
 
           if (result.event) {
             this._appendSingleEventToUI(result.event, result.count > 1);
             await this._updateStatsUIOnly();
           } else {
-            // 안전장치
             await this._refreshData();
           }
         }
@@ -1276,114 +1370,236 @@ class EditPage {
 
 /* ---- Special Remarks Page ---- */
 class SpecialRemarksPage {
+  constructor() {
+    this._filter = 'all';
+    this._allRemarks = [];
+    this._userCounts = [];
+    this._ACCENT_COLORS = ['#00d4ff','#a855f7','#00ff88','#ffa500','#ec4899','#3b82f6','#f59e0b','#10b981'];
+    this._ICONS = { '알러지':'🌰','휠체어':'♿','채식':'🥗','할랄':'☪','저염식':'🧂','당뇨':'💉','기타':'🏷️' };
+  }
+
   render() {
     const el = document.createElement('div');
     el.className = 'fade-in';
     el.innerHTML = `
-      <div style="display: flex; justify-content: space-between; margin-bottom: 16px;">
-        <h2 class="section-title" style="margin: 0;">특이사항 관리</h2>
-        <button class="btn btn-primary btn-sm" id="addRemarkBtn">+ 특이사항 추가</button>
+      <!-- 헤더 -->
+      <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px;">
+        <div>
+          <h2 class="section-title" style="margin: 0 0 10px;">특이사항 관리</h2>
+          <div id="remarksSummary" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+        </div>
+        <button class="btn btn-primary" id="addRemarkBtn">+ 특이사항 추가</button>
       </div>
-      <div id="remarksList" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;"></div>
+
+      <!-- 필터 탭 -->
+      <div style="display: flex; gap: 3px; margin-bottom: 20px; background: var(--bg-medium);
+        border-radius: 10px; padding: 4px; width: fit-content;">
+        <button class="r-tab r-tab-active" data-filter="all"
+          style="background: var(--card-bg); border: none; border-radius: 7px; padding: 6px 16px;
+            font-size: 13px; font-weight: 600; color: var(--text-primary); cursor: pointer;">전체</button>
+        <button class="r-tab" data-filter="active"
+          style="background: transparent; border: none; border-radius: 7px; padding: 6px 16px;
+            font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer;">활성</button>
+        <button class="r-tab" data-filter="inactive"
+          style="background: transparent; border: none; border-radius: 7px; padding: 6px 16px;
+            font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer;">비활성</button>
+      </div>
+
+      <!-- 카드 목록 -->
+      <div id="remarksList"></div>
     `;
     return el;
   }
 
   async afterRender() {
     document.getElementById('addRemarkBtn').addEventListener('click', () => this._showAddDialog());
+
+    document.querySelectorAll('.r-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.r-tab').forEach(b => {
+          b.style.background = 'transparent';
+          b.style.color = 'var(--text-muted)';
+          b.style.fontWeight = '500';
+        });
+        btn.style.background = 'var(--card-bg)';
+        btn.style.color = 'var(--text-primary)';
+        btn.style.fontWeight = '600';
+        this._filter = btn.dataset.filter;
+        this._renderCards();
+      });
+    });
+
     await this._loadRemarks();
   }
 
   async _loadRemarks() {
     const container = document.getElementById('remarksList');
     if (!container) return;
-
+    container.style.cssText = 'display: flex; align-items: center; justify-content: center; min-height: 200px;';
+    container.innerHTML = `<div style="color: var(--text-muted); font-size: 13px;">불러오는 중...</div>`;
     try {
-      const remarks = await window.api.getAllSpecialRemarks();
-      if (remarks.length === 0) {
-        container.innerHTML = '<p style="color: var(--text-muted); text-align: center; padding: 40px;">등록된 특이사항이 없습니다</p>';
-        return;
-      }
-
-      const icons = { '알러지': '🌰', '휠체어': '♿', '채식': '🥗', '할랄': '☪', '저염식': '🧂', '당뇨': '💉', '기타': '🏷️' };
-
-      // 각 특이사항 배정 인원 수 병렬 조회
-      const userCounts = await Promise.all(
-        remarks.map(r => window.api.getUsersForRemark(r.id).then(u => u.length).catch(() => 0))
+      this._allRemarks = await window.api.getAllSpecialRemarks();
+      this._userCounts = await Promise.all(
+        this._allRemarks.map(r => window.api.getUsersForRemark(r.id).then(u => u.length).catch(() => 0))
       );
-
-      container.innerHTML = remarks.map((r, i) => {
-        const icon = icons[r.name] || '📌';
-        const count = userCounts[i];
-        return `
-          <div class="stat-card remark-card" data-remark-id="${r.id}"
-            style="background: var(--card-bg); text-align: left; padding: 0; cursor: pointer;
-              border-radius: var(--radius-md); overflow: hidden; transition: transform 0.15s, box-shadow 0.15s;"
-            onmouseover="this.style.transform='translateY(-2px)';this.style.boxShadow='0 6px 20px rgba(0,212,255,0.15)'"
-            onmouseout="this.style.transform='';this.style.boxShadow=''">
-            <!-- 카드 바디 -->
-            <div style="padding: 18px 20px 14px;">
-              <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;">
-                <span style="font-size: 26px; line-height: 1; flex-shrink: 0;">${icon}</span>
-                <span class="badge ${r.is_active ? 'badge-active' : 'badge-terminated'}" style="font-size: 10px; margin-top: 2px;">
-                  ${r.is_active ? '활성' : '비활성'}
-                </span>
-              </div>
-              <h3 style="font-size: 15px; font-weight: 700; margin: 10px 0 4px;">${r.name}</h3>
-              <p style="color: var(--text-muted); font-size: 11px; margin: 0; min-height: 14px; line-height: 1.4;">
-                ${r.description || ''}
-              </p>
-            </div>
-            <!-- 카드 푸터 -->
-            <div style="padding: 8px 20px; background: var(--bg-medium); border-top: 1px solid var(--divider);
-              display: flex; align-items: center; gap: 6px;">
-              <span style="font-size: 12px; color: var(--text-muted);">👤</span>
-              <span style="font-size: 12px; font-weight: 600; color: ${count > 0 ? 'var(--accent-cyan)' : 'var(--text-muted)'};">
-                ${count}명 배정됨
-              </span>
-              <span style="margin-left: auto; font-size: 11px; color: var(--text-dim);">클릭하여 관리 →</span>
-            </div>
-          </div>
-        `;
-      }).join('');
-
-      // 카드 클릭 → 상세 다이얼로그
-      container.querySelectorAll('.remark-card').forEach(card => {
-        card.addEventListener('click', () => {
-          const remark = remarks.find(r => r.id === parseInt(card.dataset.remarkId));
-          if (remark) this._showRemarkDetailDialog(remark);
-        });
-      });
+      this._renderSummary();
+      this._renderCards();
     } catch (e) {
-      container.innerHTML = `<p style="color: var(--error);">오류: ${e.message}</p>`;
+      container.innerHTML = `<div style="color: var(--error); padding: 20px; font-size: 13px;">오류: ${e.message}</div>`;
     }
   }
 
+  _renderSummary() {
+    const el = document.getElementById('remarksSummary');
+    if (!el) return;
+    const total = this._allRemarks.length;
+    const active = this._allRemarks.filter(r => r.is_active).length;
+    const inactive = total - active;
+    el.innerHTML = `
+      <span style="background: var(--accent-cyan-dim); color: var(--accent-cyan);
+        border-radius: 20px; padding: 3px 12px; font-size: 12px; font-weight: 600;">전체 ${total}</span>
+      <span style="background: rgba(0,255,136,0.1); color: var(--success);
+        border-radius: 20px; padding: 3px 12px; font-size: 12px; font-weight: 600;">활성 ${active}</span>
+      ${inactive > 0 ? `<span style="background: rgba(255,68,68,0.1); color: var(--error);
+        border-radius: 20px; padding: 3px 12px; font-size: 12px; font-weight: 600;">비활성 ${inactive}</span>` : ''}
+    `;
+  }
+
+  _renderCards() {
+    const container = document.getElementById('remarksList');
+    if (!container) return;
+
+    const filtered = this._filter === 'all' ? this._allRemarks
+      : this._filter === 'active' ? this._allRemarks.filter(r => r.is_active)
+      : this._allRemarks.filter(r => !r.is_active);
+
+    if (filtered.length === 0) {
+      container.style.cssText = 'display: flex; align-items: center; justify-content: center; min-height: 300px;';
+      const msg = this._filter === 'all' ? '등록된 특이사항이 없습니다'
+        : this._filter === 'active' ? '활성 특이사항이 없습니다'
+        : '비활성 특이사항이 없습니다';
+      const hint = this._filter === 'all' ? '우상단 버튼으로 특이사항을 추가하세요' : '';
+      container.innerHTML = `
+        <div style="text-align: center; color: var(--text-muted);">
+          <div style="font-size: 52px; margin-bottom: 16px; opacity: 0.2; line-height: 1;">⚠️</div>
+          <div style="font-size: 15px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">${msg}</div>
+          <div style="font-size: 13px;">${hint}</div>
+        </div>
+      `;
+      return;
+    }
+
+    container.style.cssText = 'display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; align-content: start;';
+    container.innerHTML = filtered.map((r, i) => {
+      const origIdx = this._allRemarks.indexOf(r);
+      const count = this._userCounts[origIdx] ?? 0;
+      const icon = this._ICONS[r.name] || '📌';
+      const color = r.is_active ? this._ACCENT_COLORS[origIdx % this._ACCENT_COLORS.length] : '#555';
+      return `
+        <div class="remark-card" data-remark-id="${r.id}" data-color="${color}"
+          style="background: var(--card-bg); border-radius: var(--radius-md);
+            border: 1px solid var(--divider); border-left: 3px solid ${color};
+            cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
+            overflow: hidden; display: flex; flex-direction: column;
+            opacity: ${r.is_active ? '1' : '0.55'};">
+          <div style="padding: 16px 18px 12px; flex: 1;">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 14px;">
+              <div style="width: 42px; height: 42px; border-radius: 10px;
+                background: ${color}18; display: flex; align-items: center;
+                justify-content: center; font-size: 20px; flex-shrink: 0;">${icon}</div>
+              <span style="font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 20px;
+                letter-spacing: 0.3px;
+                background: ${r.is_active ? 'rgba(0,255,136,0.1)' : 'rgba(255,68,68,0.1)'};
+                color: ${r.is_active ? 'var(--success)' : 'var(--error)'};">
+                ${r.is_active ? '● 활성' : '○ 비활성'}
+              </span>
+            </div>
+            <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">${r.name}</div>
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5; min-height: 18px;">
+              ${r.description || '<span style="opacity:0.5;">설명 없음</span>'}
+            </div>
+          </div>
+          <div style="padding: 10px 18px; background: var(--bg-medium);
+            border-top: 1px solid var(--divider);
+            display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="font-size: 13px;">👤</span>
+              <span style="font-size: 13px; font-weight: 700;
+                color: ${count > 0 ? color : 'var(--text-dim)'};">${count}명</span>
+              <span style="font-size: 11px; color: var(--text-dim);">배정됨</span>
+            </div>
+            <span style="font-size: 11px; color: var(--text-dim);">관리 →</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    container.querySelectorAll('.remark-card').forEach(card => {
+      const color = card.dataset.color;
+      card.addEventListener('mouseover', () => {
+        card.style.transform = 'translateY(-2px)';
+        card.style.boxShadow = `0 6px 20px ${color}30`;
+        card.style.borderColor = color;
+      });
+      card.addEventListener('mouseout', () => {
+        card.style.transform = '';
+        card.style.boxShadow = '';
+        card.style.borderColor = 'var(--divider)';
+        card.style.borderLeftColor = color;
+      });
+      card.addEventListener('click', () => {
+        const remark = this._allRemarks.find(r => r.id === parseInt(card.dataset.remarkId));
+        if (remark) this._showRemarkDetailDialog(remark);
+      });
+    });
+  }
+
   async _showRemarkDetailDialog(remark) {
-    const icons = { '알러지': '🌰', '휠체어': '♿', '채식': '🥗', '할랄': '☪', '저염식': '🧂', '당뇨': '💉', '기타': '🏷️' };
-    const icon = icons[remark.name] || '📌';
+    const icon = this._ICONS[remark.name] || '📌';
+    const origIdx = this._allRemarks.indexOf(remark);
+    const accentColor = remark.is_active ? this._ACCENT_COLORS[origIdx % this._ACCENT_COLORS.length] : '#555';
 
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
       <div class="modal" style="width: 760px; max-width: 90vw; max-height: 85vh; display: flex; flex-direction: column; padding: 0; overflow: hidden;">
 
-        <!-- 헤더 -->
-        <div style="padding: 20px 24px 16px; border-bottom: 1px solid var(--divider); flex-shrink: 0;">
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 28px; line-height: 1;">${icon}</span>
-            <div style="flex: 1;">
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <h3 style="margin: 0; font-size: 18px;">${remark.name}</h3>
-                <span class="badge ${remark.is_active ? 'badge-active' : 'badge-terminated'}" style="font-size: 11px;">
-                  ${remark.is_active ? '활성' : '비활성'}
-                </span>
-              </div>
-              ${remark.description ? `<p style="margin: 4px 0 0; font-size: 12px; color: var(--text-muted);">${remark.description}</p>` : ''}
+        <!-- 헤더: 인라인 편집 -->
+        <div style="padding: 18px 24px 14px; border-bottom: 1px solid var(--divider); flex-shrink: 0;
+          border-top: 3px solid ${accentColor};">
+          <div style="display: flex; align-items: center; gap: 14px;">
+            <div style="width: 46px; height: 46px; border-radius: 12px; background: ${accentColor}18;
+              display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0;">${icon}</div>
+            <div style="flex: 1; min-width: 0;">
+              <input id="inlineRemarkName" value="${remark.name}"
+                style="background: transparent; border: none; border-bottom: 1px solid transparent;
+                  color: var(--text-primary); font-size: 17px; font-weight: 700;
+                  width: 100%; padding: 2px 4px; margin-bottom: 6px; outline: none; display: block;
+                  transition: border-color 0.15s; border-radius: 0;"
+                onfocus="this.style.borderBottomColor='${accentColor}'"
+                onblur="this.style.borderBottomColor='transparent'" />
+              <input id="inlineRemarkDesc" value="${remark.description || ''}" placeholder="설명 추가..."
+                style="background: transparent; border: none; border-bottom: 1px solid transparent;
+                  color: var(--text-muted); font-size: 12px; width: 100%; padding: 2px 4px;
+                  outline: none; display: block; transition: border-color 0.15s; border-radius: 0;"
+                onfocus="this.style.borderBottomColor='var(--border)'"
+                onblur="this.style.borderBottomColor='transparent'" />
             </div>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <button class="btn btn-ghost btn-sm" id="remarkEditBtn" style="font-size: 12px;">✏️ 수정</button>
-              <button class="btn-icon" id="remarkDetailClose" title="닫기" style="font-size: 18px; color: var(--text-muted);">✕</button>
+            <div style="display: flex; align-items: center; gap: 10px; flex-shrink: 0;">
+              <label class="switch" style="margin: 0;">
+                <input type="checkbox" id="inlineRemarkActive" ${remark.is_active ? 'checked' : ''}>
+                <span class="slider"></span>
+              </label>
+              <span id="inlineActiveLabel" style="font-size: 12px; font-weight: 600; min-width: 34px;
+                color: ${remark.is_active ? 'var(--success)' : 'var(--text-muted)'};">
+                ${remark.is_active ? '활성' : '비활성'}
+              </span>
+              <button id="inlineSaveBtn" disabled
+                style="background: var(--success); color: #000; border: none; border-radius: var(--radius-sm);
+                  padding: 6px 14px; font-size: 12px; font-weight: 700; cursor: not-allowed;
+                  opacity: 0.25; transition: opacity 0.2s, transform 0.15s;">저장</button>
+              <button class="btn-icon" id="remarkDetailClose" title="닫기"
+                style="font-size: 18px; color: var(--text-muted);">✕</button>
             </div>
           </div>
         </div>
@@ -1524,26 +1740,65 @@ class SpecialRemarksPage {
       searchTimer = setTimeout(() => loadAssignList(e.target.value.trim()), 300);
     });
 
+    // ── 인라인 편집 ──
+    const nameInput   = overlay.querySelector('#inlineRemarkName');
+    const descInput   = overlay.querySelector('#inlineRemarkDesc');
+    const activeChk   = overlay.querySelector('#inlineRemarkActive');
+    const activeLabel = overlay.querySelector('#inlineActiveLabel');
+    const saveBtn     = overlay.querySelector('#inlineSaveBtn');
+
+    const setDirty = (dirty) => {
+      saveBtn.disabled = !dirty;
+      saveBtn.style.opacity   = dirty ? '1' : '0.25';
+      saveBtn.style.cursor    = dirty ? 'pointer' : 'not-allowed';
+      saveBtn.style.transform = dirty ? 'scale(1.05)' : 'scale(1)';
+    };
+    const checkDirty = () => setDirty(
+      nameInput.value.trim() !== remark.name
+      || descInput.value.trim() !== (remark.description || '')
+      || activeChk.checked !== !!remark.is_active
+    );
+
+    nameInput.addEventListener('input', checkDirty);
+    descInput.addEventListener('input', checkDirty);
+    activeChk.addEventListener('change', () => {
+      activeLabel.textContent = activeChk.checked ? '활성' : '비활성';
+      activeLabel.style.color = activeChk.checked ? 'var(--success)' : 'var(--text-muted)';
+      checkDirty();
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const result = await window.api.updateSpecialRemark(remark.id, name, descInput.value.trim(), activeChk.checked);
+      if (result.success) {
+        remark.name        = name;
+        remark.description = descInput.value.trim();
+        remark.is_active   = activeChk.checked ? 1 : 0;
+        setDirty(false);
+        await this._loadRemarks();
+        window.app.showToast('저장됐습니다', 'success');
+      } else {
+        await window.api.showError('수정 실패', result.message);
+      }
+    });
+
     const close = () => overlay.remove();
     overlay.querySelector('#remarkDetailClose').addEventListener('click', close);
     overlay.querySelector('#remarkDetailCloseBtn').addEventListener('click', close);
 
-    overlay.querySelector('#remarkEditBtn').addEventListener('click', () => {
-      this._showRemarkEditDialog(remark, async (updated) => {
-        overlay.remove();
-        await this._loadRemarks();
-        // 수정된 내용으로 다이얼로그 다시 열기
-        this._showRemarkDetailDialog(updated);
-      });
-    });
-
     overlay.querySelector('#remarkDeleteBtn').addEventListener('click', async () => {
       const resp = await window.api.showMessage({
-        type: 'warning', buttons: ['취소', '삭제'], defaultId: 0,
-        title: '특이사항 삭제', message: `"${remark.name}" 을(를) 삭제하시겠습니까?\n배정된 사용자 정보도 모두 해제됩니다.`
+        type: 'warning', buttons: ['취소', '삭제'], defaultId: 0, cancelId: 0,
+        title: '특이사항 삭제', message: `"${remark.name}" 을(를) 삭제하시겠습니까?`,
+        detail: '배정된 사용자 정보도 모두 해제됩니다.'
       });
-      if (resp === 1) {
-        await window.api.deleteSpecialRemark(remark.id);
+      if (resp !== 0) {
+        const result = await window.api.deleteSpecialRemark(remark.id);
+        if (result && result.success === false) {
+          await window.api.showError('삭제 실패', result.message);
+          return;
+        }
         overlay.remove();
         await this._loadRemarks();
       }
@@ -1816,88 +2071,346 @@ class DashboardPage {
 
 /* ---- Settings Page ---- */
 class SettingsPage {
+  constructor() {
+    this._activeGroup = 'general';
+    this._allSettings = {};
+    this._searchQuery = '';
+  }
+
+  _getConfig() {
+    const groups = [
+      {
+        id: 'general', icon: '⚙️', name: '일반', color: '#00d4ff',
+        desc: '기본 동작 및 표시 설정',
+        keys: ['dark_mode', 'duplicate_highlight_duration', 'max_search_results', 'max_search_results_chosung'],
+      },
+      {
+        id: 'checkin', icon: '✅', name: '체크인', color: '#00ff88',
+        desc: '체크인 판정 및 효과 설정',
+        keys: ['duplicate_window_minutes', 'checkin_auto_clear_seconds', 'default_menu_type', 'checkin_sound_enabled', 'checkin_sound_duplicate'],
+      },
+      {
+        id: 'tts', icon: '🔊', name: '음성 안내', color: '#a855f7',
+        desc: 'TTS 음성 출력 세부 설정',
+        keys: ['tts_enabled', 'tts_rate', 'tts_volume', 'tts_anonymous', 'tts_read_normal', 'tts_read_porridge', 'tts_read_remarks', 'tts_read_duplicate', 'tts_read_unregistered', 'tts_read_recent_duplicate', 'tts_custom_checkin_msg', 'tts_custom_duplicate_msg'],
+      },
+      {
+        id: 'display', icon: '🖥️', name: '화면 표시', color: '#ec4899',
+        desc: '화면 레이아웃 및 UI 설정',
+        keys: ['ui_font_size', 'ui_fullscreen_on_start', 'ui_show_user_number', 'ui_usage_list_max', 'ui_show_ticket_button'],
+      },
+      {
+        id: 'hardware', icon: '🔌', name: '하드웨어', color: '#ffa500',
+        desc: '카드 리더기 및 장치 설정',
+        keys: ['com_port', 'baud_rate', 'scan_interval', 'card_debounce_time'],
+      },
+      {
+        id: 'backup', icon: '💾', name: '백업', color: '#3b82f6',
+        desc: '자동 백업 및 보관 설정',
+        keys: ['auto_backup', 'backup_interval', 'max_backups'],
+      },
+      {
+        id: 'export', icon: '📤', name: '내보내기', color: '#f59e0b',
+        desc: 'CSV 내보내기 옵션',
+        keys: ['export_include_ticket', 'export_encoding'],
+      },
+      {
+        id: 'logging', icon: '📋', name: '로깅', color: '#6b7280',
+        desc: '로그 기록 및 보관 설정',
+        keys: ['log_level', 'log_retention_days'],
+      },
+    ];
+
+    const meta = {
+      dark_mode:                  { label: '다크 모드',              desc: '어두운 테마 사용', type: 'bool' },
+      duplicate_highlight_duration:{ label: '중복 강조 시간',        desc: '중복 이용 강조 표시 시간 (초)', type: 'number', unit: '초' },
+      max_search_results:          { label: '검색 결과 수',          desc: '검색 시 표시할 최대 결과 수', type: 'number', unit: '건' },
+      max_search_results_chosung:  { label: '초성 검색 결과 수',     desc: '초성 검색 시 표시할 최대 결과 수', type: 'number', unit: '건' },
+      duplicate_window_minutes:    { label: '중복 판정 시간',        desc: '이 시간 이내 재체크인은 중복으로 차단됩니다', type: 'number', unit: '분' },
+      checkin_auto_clear_seconds:  { label: '알림 표시 시간',        desc: '체크인 후 토스트 알림이 사라지는 시간', type: 'number', unit: '초' },
+      default_menu_type:           { label: '기본 식사 유형',        desc: '일괄 죽식 꺼짐 시 기본 메뉴', type: 'select', options: [['일반식','일반식'],['죽식','죽식']] },
+      checkin_sound_enabled:       { label: '체크인 효과음',         desc: '체크인 성공 시 효과음 재생', type: 'bool' },
+      checkin_sound_duplicate:     { label: '중복 경고음',           desc: '중복 체크인 시 경고음 재생', type: 'bool' },
+      tts_enabled:                 { label: 'TTS 활성화',           desc: '음성 안내 마스터 스위치', type: 'bool' },
+      tts_rate:                    { label: '음성 속도',            desc: '읽기 속도 (기본 150)', type: 'range', min: 50, max: 300, step: 10 },
+      tts_volume:                  { label: '음성 볼륨',            desc: '출력 볼륨 (0.0 ~ 1.0)', type: 'range', min: 0, max: 1, step: 0.1 },
+      tts_anonymous:               { label: '음성 익명화',          desc: '이름 중간을 마스킹 (김바보→김*보)', type: 'bool' },
+      tts_read_normal:             { label: '일반식 안내',           desc: '일반식 체크인 시 음성 안내', type: 'bool' },
+      tts_read_porridge:           { label: '죽식 안내',            desc: '죽식 체크인 시 음성 안내', type: 'bool' },
+      tts_read_remarks:            { label: '특이사항 안내',         desc: '특이사항 있는 이용자 안내', type: 'bool' },
+      tts_read_duplicate:          { label: '중복 안내',            desc: '당일 중복 이용 시 안내', type: 'bool' },
+      tts_read_unregistered:       { label: '미등록자 안내',         desc: '미등록 카드/번호 입력 시 안내', type: 'bool' },
+      tts_read_recent_duplicate:   { label: '단시간 중복 안내',      desc: '판정 시간 내 재시도 시 안내', type: 'bool' },
+      tts_custom_checkin_msg:      { label: '체크인 멘트',          desc: '비워두면 기본 멘트 사용', type: 'text', placeholder: '예: {name}님 환영합니다' },
+      tts_custom_duplicate_msg:    { label: '중복 멘트',            desc: '비워두면 기본 멘트 사용', type: 'text', placeholder: '예: {name}님 이미 수령하셨습니다' },
+      ui_font_size:                { label: '글꼴 크기',            desc: '앱 전체 기본 글꼴 크기 (재시작 필요)', type: 'number', unit: 'px' },
+      ui_fullscreen_on_start:      { label: '시작 시 전체 화면',     desc: '앱 실행 시 자동 전체 화면 (재시작 필요)', type: 'bool' },
+      ui_show_user_number:         { label: '번호 표시',            desc: '이용 현황 목록에 사용자 번호 표시', type: 'bool' },
+      ui_usage_list_max:           { label: '현황 표시 수',          desc: '실시간 현황에 표시할 최대 이벤트 수', type: 'number', unit: '건' },
+      ui_show_ticket_button:       { label: '식권 버튼',            desc: '식권 통계 카드 표시 여부', type: 'bool' },
+      com_port:                    { label: 'COM 포트',             desc: '카드 리더기 시리얼 포트', type: 'text', placeholder: 'COM3' },
+      baud_rate:                   { label: '전송 속도',            desc: '시리얼 통신 속도', type: 'select', options: [['9600','9600'],['19200','19200'],['38400','38400'],['115200','115200']] },
+      scan_interval:               { label: '스캔 간격',            desc: '카드 스캔 폴링 간격', type: 'number', unit: '초' },
+      card_debounce_time:          { label: '중복 인식 방지',        desc: '연속 카드 인식 차단 시간', type: 'number', unit: '초' },
+      auto_backup:                 { label: '자동 백업',            desc: '주기적 자동 백업 활성화', type: 'bool' },
+      backup_interval:             { label: '백업 주기',            desc: '자동 백업 실행 주기', type: 'select', options: [['daily','매일'],['weekly','매주'],['monthly','매월']] },
+      max_backups:                 { label: '최대 백업 수',          desc: '오래된 백업 자동 삭제 기준', type: 'number', unit: '개' },
+      export_include_ticket:       { label: '식권 포함',            desc: 'CSV 내보내기 시 식권 데이터 포함', type: 'bool' },
+      export_encoding:             { label: 'CSV 인코딩',           desc: '내보내기 파일 문자 인코딩', type: 'select', options: [['UTF-8','UTF-8'],['EUC-KR','EUC-KR']] },
+      log_level:                   { label: '로그 레벨',            desc: '기록할 로그의 최소 심각도', type: 'select', options: [['DEBUG','DEBUG'],['INFO','INFO'],['WARNING','WARNING'],['ERROR','ERROR']] },
+      log_retention_days:          { label: '로그 보관 기간',        desc: '오래된 로그 자동 삭제 기준', type: 'number', unit: '일' },
+    };
+
+    return { groups, meta };
+  }
+
   render() {
     const el = document.createElement('div');
     el.className = 'fade-in';
-    el.innerHTML = `<div id="settingsContainer">로딩 중...</div>`;
+    el.style.cssText = 'display: flex; height: 100%; overflow: hidden; gap: 0;';
+    el.innerHTML = `
+      <!-- 좌측 내비게이션 -->
+      <div class="s-nav">
+        <div class="s-nav-search">
+          <span class="s-nav-search-icon">🔍</span>
+          <input class="s-nav-search-input" id="settingsSearch" placeholder="설정 검색..." />
+        </div>
+        <div class="s-nav-list" id="settingsNavList"></div>
+        <div class="s-nav-footer">
+          <div class="s-nav-version" id="settingsVersion"></div>
+        </div>
+      </div>
+      <!-- 우측 콘텐츠 -->
+      <div class="s-content" id="settingsContent">
+        <div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);">로딩 중...</div>
+      </div>
+    `;
     return el;
   }
 
   async afterRender() {
     try {
-      const allSettings = await window.api.getAllSettings();
-      const container = document.getElementById('settingsContainer');
+      this._allSettings = await window.api.getAllSettings();
+      const { groups } = this._getConfig();
 
-      const groups = {
-        '일반': ['dark_mode', 'duplicate_highlight_duration', 'max_search_results'],
-        '하드웨어': ['com_port', 'baud_rate', 'scan_interval', 'card_debounce_time'],
-        '음성 안내 (TTS)': ['tts_enabled', 'tts_rate', 'tts_volume', 'tts_anonymous', 'tts_read_normal', 'tts_read_porridge', 'tts_read_remarks', 'tts_read_duplicate'],
-        '백업': ['auto_backup', 'backup_interval', 'max_backups'],
-        '로깅': ['log_level', 'log_retention_days'],
-      };
+      // 버전 표시
+      try {
+        const ver = await window.api.getVersion();
+        const verEl = document.getElementById('settingsVersion');
+        if (verEl) verEl.textContent = `v${ver}`;
+      } catch (e) { /* skip */ }
 
-      const labels = {
-        dark_mode: '다크 모드', duplicate_highlight_duration: '중복 강조 시간 (초)',
-        max_search_results: '검색 결과 표시 개수', com_port: 'COM 포트',
-        baud_rate: '전송 속도', scan_interval: '스캔 간격 (초)',
-        card_debounce_time: '카드 중복 방지 시간 (초)', tts_enabled: 'TTS 활성화',
-        tts_rate: 'TTS 속도', tts_volume: 'TTS 볼륨', tts_anonymous: '음성 익명화',
-        tts_read_normal: '일반식 읽기', tts_read_porridge: '죽식 읽기',
-        tts_read_remarks: '특이사항 읽기', tts_read_duplicate: '중복 이용 읽기',
-        auto_backup: '자동 백업', backup_interval: '백업 주기',
-        max_backups: '최대 백업 개수', log_level: '로그 레벨',
-        log_retention_days: '로그 보관 기간 (일)',
-      };
+      // 내비게이션 렌더링
+      this._renderNav(groups);
 
-      const boolKeys = new Set(['dark_mode', 'tts_enabled', 'tts_anonymous', 'tts_read_normal', 'tts_read_porridge', 'tts_read_remarks', 'tts_read_duplicate', 'auto_backup']);
+      // 첫 그룹 활성화
+      this._switchGroup(groups[0].id);
 
-      let html = '';
-      for (const [groupName, keys] of Object.entries(groups)) {
-        html += `<div class="settings-group"><h3>${groupName}</h3>`;
-        for (const key of keys) {
-          const value = allSettings[key];
-          const label = labels[key] || key;
-          if (boolKeys.has(key)) {
-            const checked = value === true || value === 1 || value === '1' || value === 'true';
-            html += `
-              <div class="setting-row">
-                <span class="setting-label">${label}</span>
-                <label class="switch">
-                  <input type="checkbox" data-key="${key}" ${checked ? 'checked' : ''}>
-                  <span class="slider"></span>
-                </label>
-              </div>
-            `;
-          } else {
-            html += `
-              <div class="setting-row">
-                <span class="setting-label">${label}</span>
-                <input class="input" style="width: 200px;" data-key="${key}" value="${value ?? ''}" />
-              </div>
-            `;
-          }
-        }
-        html += '</div>';
-      }
-
-      container.innerHTML = html;
-
-      // Event handlers
-      container.querySelectorAll('input[data-key]').forEach(input => {
-        const handler = async () => {
-          const key = input.dataset.key;
-          const value = input.type === 'checkbox' ? (input.checked ? '1' : '0') : input.value;
-          await window.api.setSetting(key, value);
-        };
-        if (input.type === 'checkbox') {
-          input.addEventListener('change', handler);
+      // 검색
+      document.getElementById('settingsSearch').addEventListener('input', (e) => {
+        this._searchQuery = e.target.value.trim().toLowerCase();
+        if (this._searchQuery) {
+          this._renderSearchResults();
         } else {
-          input.addEventListener('change', handler);
+          this._switchGroup(this._activeGroup);
         }
       });
     } catch (e) {
-      document.getElementById('settingsContainer').innerHTML = `<p style="color: var(--error);">설정 로드 실패: ${e.message}</p>`;
+      document.getElementById('settingsContent').innerHTML =
+        `<div style="padding:40px;color:var(--error);">설정 로드 실패: ${e.message}</div>`;
     }
+  }
+
+  _renderNav(groups) {
+    const nav = document.getElementById('settingsNavList');
+    nav.innerHTML = groups.map(g => {
+      const count = g.keys.length;
+      return `
+        <div class="s-nav-item ${g.id === this._activeGroup ? 's-nav-item-active' : ''}" data-group="${g.id}">
+          <span class="s-nav-item-icon" style="background: ${g.color}15; color: ${g.color};">${g.icon}</span>
+          <div class="s-nav-item-text">
+            <span class="s-nav-item-name">${g.name}</span>
+            <span class="s-nav-item-count">${count}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    nav.querySelectorAll('.s-nav-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.getElementById('settingsSearch').value = '';
+        this._searchQuery = '';
+        this._switchGroup(item.dataset.group);
+      });
+    });
+  }
+
+  _switchGroup(groupId) {
+    this._activeGroup = groupId;
+    const { groups, meta } = this._getConfig();
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+
+    // 네비 활성 표시 갱신
+    document.querySelectorAll('.s-nav-item').forEach(el => {
+      el.classList.toggle('s-nav-item-active', el.dataset.group === groupId);
+    });
+
+    const content = document.getElementById('settingsContent');
+    content.innerHTML = `
+      <div class="s-panel">
+        <div class="s-panel-header">
+          <div class="s-panel-icon" style="background: ${group.color}15; color: ${group.color};">${group.icon}</div>
+          <div>
+            <h2 class="s-panel-title">${group.name}</h2>
+            <p class="s-panel-desc">${group.desc}</p>
+          </div>
+        </div>
+        <div class="s-panel-body">
+          ${this._renderSettingRows(group.keys, meta)}
+        </div>
+      </div>
+    `;
+
+    this._bindHandlers(content);
+  }
+
+  _renderSearchResults() {
+    const { groups, meta } = this._getConfig();
+    const q = this._searchQuery;
+    const matched = [];
+
+    for (const g of groups) {
+      for (const key of g.keys) {
+        const m = meta[key];
+        if (!m) continue;
+        const haystack = `${m.label} ${m.desc} ${key}`.toLowerCase();
+        if (haystack.includes(q)) {
+          matched.push({ key, group: g });
+        }
+      }
+    }
+
+    const content = document.getElementById('settingsContent');
+
+    if (matched.length === 0) {
+      content.innerHTML = `
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text-muted);gap:12px;">
+          <span style="font-size:36px;opacity:0.3;">🔍</span>
+          <span style="font-size:14px;">"${this._searchQuery}"에 대한 검색 결과가 없습니다</span>
+        </div>
+      `;
+      return;
+    }
+
+    // 그룹별로 묶기
+    const byGroup = {};
+    for (const m of matched) {
+      if (!byGroup[m.group.id]) byGroup[m.group.id] = { group: m.group, keys: [] };
+      byGroup[m.group.id].keys.push(m.key);
+    }
+
+    let html = `<div class="s-panel"><div class="s-panel-header">
+      <div class="s-panel-icon" style="background:rgba(0,212,255,0.1);color:var(--accent-cyan);">🔍</div>
+      <div>
+        <h2 class="s-panel-title">검색 결과</h2>
+        <p class="s-panel-desc">${matched.length}개 항목 찾음</p>
+      </div>
+    </div><div class="s-panel-body">`;
+
+    for (const { group, keys } of Object.values(byGroup)) {
+      html += `<div class="s-search-group-label" style="color:${group.color};">${group.icon} ${group.name}</div>`;
+      html += this._renderSettingRows(keys, meta);
+    }
+
+    html += '</div></div>';
+    content.innerHTML = html;
+    this._bindHandlers(content);
+  }
+
+  _renderSettingRows(keys, meta) {
+    let html = '';
+    for (const key of keys) {
+      const m = meta[key];
+      if (!m) continue;
+      const value = this._allSettings[key];
+      html += `<div class="s-row" data-setting-key="${key}">`;
+      html += `<div class="s-row-info"><div class="s-row-label">${m.label}</div><div class="s-row-desc">${m.desc}</div></div>`;
+      html += `<div class="s-row-control">${this._renderControl(key, m, value)}</div>`;
+      html += `</div>`;
+    }
+    return html;
+  }
+
+  _renderControl(key, m, value) {
+    if (m.type === 'bool') {
+      const checked = value === true || value === 1 || value === '1' || value === 'true';
+      return `
+        <label class="switch">
+          <input type="checkbox" data-key="${key}" ${checked ? 'checked' : ''}>
+          <span class="slider round"></span>
+        </label>
+      `;
+    }
+    if (m.type === 'select') {
+      const opts = m.options.map(([val, lbl]) =>
+        `<option value="${val}" ${(value ?? '') === val ? 'selected' : ''}>${lbl}</option>`
+      ).join('');
+      return `<select class="s-select" data-key="${key}">${opts}</select>`;
+    }
+    if (m.type === 'range') {
+      const num = parseFloat(value ?? m.min);
+      return `
+        <div class="s-range-wrap">
+          <input type="range" class="s-range" data-key="${key}" min="${m.min}" max="${m.max}" step="${m.step}" value="${num}" />
+          <span class="s-range-value" id="rv_${key}">${num}</span>
+        </div>
+      `;
+    }
+    if (m.type === 'number') {
+      return `
+        <div class="s-number-wrap">
+          <input type="number" class="s-input-number" data-key="${key}" value="${value ?? ''}" />
+          ${m.unit ? `<span class="s-unit">${m.unit}</span>` : ''}
+        </div>
+      `;
+    }
+    // text
+    return `<input type="text" class="s-input-text" data-key="${key}" value="${value ?? ''}" placeholder="${m.placeholder || ''}" />`;
+  }
+
+  _bindHandlers(container) {
+    container.querySelectorAll('[data-key]').forEach(el => {
+      const save = async () => {
+        const key = el.dataset.key;
+        let value;
+        if (el.type === 'checkbox') value = el.checked ? '1' : '0';
+        else if (el.type === 'range') value = el.value;
+        else value = el.value;
+
+        this._allSettings[key] = value;
+        await window.api.setSetting(key, value);
+
+        // 저장 피드백 애니메이션
+        const row = el.closest('.s-row');
+        if (row) {
+          row.classList.add('s-row-saved');
+          setTimeout(() => row.classList.remove('s-row-saved'), 600);
+        }
+      };
+
+      if (el.type === 'checkbox') {
+        el.addEventListener('change', save);
+      } else if (el.type === 'range') {
+        el.addEventListener('input', () => {
+          const display = document.getElementById(`rv_${el.dataset.key}`);
+          if (display) display.textContent = el.value;
+        });
+        el.addEventListener('change', save);
+      } else {
+        el.addEventListener('change', save);
+      }
+    });
   }
 
   cleanup() { }

@@ -62,6 +62,17 @@ class ConfigManager {
     return this.save(config);
   }
 
+  getSkippedVersion() {
+    const config = this.load();
+    return config ? (config.skipped_update_version || null) : null;
+  }
+
+  setSkippedVersion(version) {
+    const config = this.load() || {};
+    config.skipped_update_version = version;
+    return this.save(config);
+  }
+
   getLogDir() {
     const basePath = this.getBasePath();
     if (!basePath) return null;
