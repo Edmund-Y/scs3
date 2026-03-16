@@ -24,6 +24,80 @@ let config = null;
 let settings = null;
 let logger = null;
 
+// ==================== 시리얼 카드 리더기 ====================
+let serialPort = null;
+let serialParser = null;
+let cardDebounceTimer = null;
+let lastCardNumber = null;
+
+function startCardReader(comPort, baudRate) {
+  stopCardReader();
+
+  const { SerialPort } = require('serialport');
+  const { ReadlineParser } = require('@serialport/parser-readline');
+
+  logger.info(`카드 리더기 연결 시도: ${comPort} (${baudRate} baud)`);
+
+  try {
+    serialPort = new SerialPort({ path: comPort, baudRate: parseInt(baudRate, 10) });
+    serialParser = serialPort.pipe(new ReadlineParser({ delimiter: '\r\n' }));
+
+    serialPort.on('open', () => {
+      logger.info(`카드 리더기 연결 성공: ${comPort}`);
+      if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: true, port: comPort });
+    });
+
+    serialParser.on('data', (data) => {
+      // 제어문자 제거
+      const card = data.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim();
+      if (!card) return;
+
+      // 디바운스: 동일 카드 0.3초 이내 재입력 무시
+      const debounceMs = settings ? parseInt(settings.get('card_debounce_time', '0.3') * 1000) : 300;
+      if (card === lastCardNumber && cardDebounceTimer) return;
+      lastCardNumber = card;
+      clearTimeout(cardDebounceTimer);
+      cardDebounceTimer = setTimeout(() => { lastCardNumber = null; }, debounceMs);
+
+      logger.info(`카드 읽기: ${card}`);
+      if (mainWindow) mainWindow.webContents.send('card-reader:data', card);
+    });
+
+    serialPort.on('error', (err) => {
+      logger.error(`카드 리더기 오류: ${err.message}`);
+      if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: false, error: err.message });
+    });
+
+    serialPort.on('close', () => {
+      logger.info('카드 리더기 연결 끊김');
+      if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: false });
+    });
+
+  } catch (err) {
+    logger.error(`카드 리더기 시작 실패: ${err.message}`);
+    if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: false, error: err.message });
+  }
+}
+
+function stopCardReader() {
+  if (serialPort && serialPort.isOpen) {
+    try { serialPort.close(); } catch (e) {}
+  }
+  serialPort = null;
+  serialParser = null;
+}
+
+// 포트 목록 조회
+async function listSerialPorts() {
+  const { SerialPort } = require('serialport');
+  try {
+    const ports = await SerialPort.list();
+    return ports.map(p => ({ path: p.path, manufacturer: p.manufacturer || '', friendlyName: p.friendlyName || '' }));
+  } catch (e) {
+    return [];
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -62,6 +136,7 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => {
+    if (logger) logger.setWindow(null);
     mainWindow = null;
   });
 }
@@ -108,6 +183,28 @@ async function initializeApp() {
 
       // 5. 설정 관리자 (DB 기반)
       settings = new SettingsManager(db, logger);
+
+      // 6. 카드 리더기 시작
+      const comPort = settings.get('com_port', 'COM3');
+      const baudRate = settings.get('baud_rate', '9600');
+      startCardReader(comPort, baudRate);
+
+      // 7. 종결 후 1년 경과 사용자 자동 영구 삭제 (시작 시 + 매일 자정)
+      const runPurge = () => {
+        const result = db.purgeExpiredUsers();
+        if (result.count > 0) logger.info(`[자동 삭제] 종결 1년 경과 사용자 ${result.count}명 영구 삭제`);
+      };
+      runPurge();
+      const msUntilMidnight = () => {
+        const now = new Date();
+        const midnight = new Date(now);
+        midnight.setHours(24, 0, 0, 0);
+        return midnight - now;
+      };
+      setTimeout(function schedulePurge() {
+        runPurge();
+        setInterval(runPurge, 24 * 60 * 60 * 1000);
+      }, msUntilMidnight());
     } catch (err) {
       logger.error(`데이터베이스 연결 실패: ${err.message}`);
       dialog.showErrorBox('치명적 오류', `데이터베이스 연결에 실패했습니다:\n${err.message}`);
@@ -118,6 +215,7 @@ async function initializeApp() {
 
   // 6. 윈도우 생성
   createWindow();
+  if (logger) logger.setWindow(mainWindow);
 
   // 7. 자동 업데이트 설정
   setupAutoUpdater();
@@ -174,6 +272,8 @@ ipcMain.handle('db:getCardOwnerInfo', (_, cardNumber) => db.getCardOwnerInfo(car
 ipcMain.handle('db:reissueCard', (_, userId, newCardNumber, reason) => db.reissueCard(userId, newCardNumber, reason));
 ipcMain.handle('db:transferCard', (_, cardNumber, targetUserId, reason) => db.transferCard(cardNumber, targetUserId, reason));
 ipcMain.handle('db:deleteCardsForUser', (_, userId) => db.deleteCardsForUser(userId));
+ipcMain.handle('db:purgeUser', (_, userId) => db.purgeUser(userId));
+ipcMain.handle('db:purgeExpiredUsers', () => db.purgeExpiredUsers());
 
 // 이벤트/체크인
 ipcMain.handle('db:checkIn', (_, userId, menuType, inputMethod, notes) => {
@@ -195,7 +295,7 @@ ipcMain.handle('db:getAllSpecialRemarks', () => db.getAllSpecialRemarks());
 ipcMain.handle('db:addSpecialRemark', (_, name, desc, order, start, end, active) => {
   return db.addSpecialRemark(name, desc, order, start, end, active);
 });
-ipcMain.handle('db:updateSpecialRemark', (_, id, name, desc, isActive) => db.updateSpecialRemark(id, name, desc, isActive));
+ipcMain.handle('db:updateSpecialRemark', (_, id, name, desc, isActive, startDate, endDate) => db.updateSpecialRemark(id, name, desc, isActive, startDate, endDate));
 ipcMain.handle('db:deleteSpecialRemark', (_, remarkId) => db.deleteSpecialRemark(remarkId));
 ipcMain.handle('db:getUsersForRemark', (_, remarkId) => db.getUsersForRemark(remarkId));
 ipcMain.handle('db:assignRemark', (_, userId, remarkId) => db.assignRemark(userId, remarkId));
@@ -271,6 +371,24 @@ ipcMain.handle('setup:createDatabase', async (_, basePath) => {
     logger.error(`데이터베이스 생성 실패: ${err.message}`);
     return { success: false, error: err.message };
   }
+});
+
+// ==================== 카드 리더기 IPC ====================
+
+ipcMain.handle('card-reader:listPorts', async () => listSerialPorts());
+
+ipcMain.handle('card-reader:connect', (_, comPort, baudRate) => {
+  startCardReader(comPort, baudRate);
+  return { success: true };
+});
+
+ipcMain.handle('card-reader:disconnect', () => {
+  stopCardReader();
+  return { success: true };
+});
+
+ipcMain.handle('card-reader:isConnected', () => {
+  return serialPort && serialPort.isOpen;
 });
 
 // ==================== 자동 업데이트 ====================
@@ -369,6 +487,7 @@ app.whenReady().then(initializeApp);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    stopCardReader();
     if (db) {
       db.close();
     }

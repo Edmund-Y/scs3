@@ -94,8 +94,41 @@ class DatabaseManager {
   }
 
   _run(sql, params = []) {
-    this.db.run(sql, params);
-    this._save();
+    try {
+      this.db.run(sql, params);
+      this._lastInsertRowId = this._fetchLastInsertRowId();
+      this._save();
+    } catch (e) {
+      console.error(`[DB:_run] SQL 실행 실패:`, e.message, '\nSQL:', sql, '\nParams:', JSON.stringify(params));
+      throw e;
+    }
+  }
+
+  _fetchLastInsertRowId() {
+    const stmt = this.db.prepare('SELECT last_insert_rowid() as id');
+    stmt.step();
+    const row = stmt.getAsObject();
+    stmt.free();
+    return row.id;
+  }
+
+  _getLastInsertRowId() {
+    return this._lastInsertRowId;
+  }
+
+  _upsertCard(userId, cardNumber) {
+    const existing = this._queryOne(
+      `SELECT id FROM cards WHERE card_number = ?`, [cardNumber]
+    );
+    if (existing) {
+      this._run(
+        `UPDATE cards SET user_id = ?, deactivated_at = NULL, reissue_reason = NULL,
+         issued_at = datetime('now','localtime') WHERE id = ?`,
+        [userId, existing.id]
+      );
+    } else {
+      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [userId, cardNumber]);
+    }
   }
 
   // ==================== 테이블 생성 ====================
@@ -252,8 +285,8 @@ class DatabaseManager {
       }
 
       this._run(`INSERT INTO users (number, name, notes) VALUES (?, ?, ?)`, [number, name, notes || null]);
-      const row = this._queryOne(`SELECT last_insert_rowid() as id`);
-      const userId = row.id;
+      const userId = this._getLastInsertRowId();
+      console.log(`[addUser] 새 사용자 생성 완료: userId=${userId}, number=${number}`);
 
       // 카드 번호가 있으면 카드 추가
       if (cardNumber) {
@@ -442,12 +475,14 @@ class DatabaseManager {
       const existing = this._queryOne(`SELECT id, user_id FROM cards WHERE card_number = ? AND deactivated_at IS NULL`, [cardNumber]);
       if (existing) return { success: false, message: `이미 사용 중인 카드 번호입니다: ${cardNumber}`, cardId: null };
 
-      const user = this._queryOne(`SELECT id FROM users WHERE id = ? AND deleted_at IS NULL`, [userId]);
-      if (!user) return { success: false, message: '사용자를 찾을 수 없습니다', cardId: null };
+      console.log(`[addCard] userId=${userId}, cardNumber=${cardNumber}`);
+      const user = this._queryOne(`SELECT id, deleted_at FROM users WHERE id = ?`, [userId]);
+      console.log(`[addCard] user lookup result:`, JSON.stringify(user));
+      if (!user || user.deleted_at !== null) return { success: false, message: '사용자를 찾을 수 없습니다', cardId: null };
 
-      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [userId, cardNumber]);
-      const row = this._queryOne(`SELECT last_insert_rowid() as id`);
-      return { success: true, message: '카드 추가 성공', cardId: row.id };
+      this._upsertCard(userId, cardNumber);
+      const cardId = this._getLastInsertRowId();
+      return { success: true, message: '카드 추가 성공', cardId };
     } catch (e) {
       return { success: false, message: `카드 추가 실패: ${e.message}`, cardId: null };
     }
@@ -480,6 +515,16 @@ class DatabaseManager {
 
   reissueCard(userId, newCardNumber, reason = '카드 재발급') {
     try {
+      // 새 카드가 다른 사용자의 활성 카드로 이미 등록된 경우 차단
+      const conflict = this._queryOne(
+        `SELECT c.id, u.number, u.name FROM cards c JOIN users u ON c.user_id = u.id
+         WHERE c.card_number = ? AND c.deactivated_at IS NULL AND c.user_id != ?`,
+        [newCardNumber, userId]
+      );
+      if (conflict) {
+        return { success: false, message: `이미 다른 사용자(${conflict.number} ${conflict.name})에게 등록된 카드입니다: ${newCardNumber}` };
+      }
+
       // 기존 활성 카드 비활성화
       const oldCards = this._queryAll(
         `SELECT id FROM cards WHERE user_id = ? AND deactivated_at IS NULL`, [userId]
@@ -491,7 +536,7 @@ class DatabaseManager {
         );
       }
       // 새 카드 추가
-      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [userId, newCardNumber]);
+      this._upsertCard(userId, newCardNumber);
       return { success: true, message: '카드가 재발급되었습니다' };
     } catch (e) {
       return { success: false, message: `카드 재발급 실패: ${e.message}` };
@@ -528,10 +573,43 @@ class DatabaseManager {
       }
 
       // 새 소유자에게 카드 배정
-      this._run(`INSERT INTO cards (user_id, card_number) VALUES (?, ?)`, [targetUserId, cardNumber]);
+      this._upsertCard(targetUserId, cardNumber);
       return { success: true, message: '카드가 성공적으로 이전되었습니다' };
     } catch (e) {
       return { success: false, message: `카드 이전 실패: ${e.message}` };
+    }
+  }
+
+  // 종결 사용자 영구 삭제 (카드, 이벤트, 특이사항 포함)
+  purgeUser(userId) {
+    try {
+      const user = this._queryOne(`SELECT status FROM users WHERE id = ?`, [userId]);
+      if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
+      if (user.status !== 'terminated') return { success: false, message: '종결된 사용자만 영구 삭제할 수 있습니다' };
+
+      this._run(`DELETE FROM cards WHERE user_id = ?`, [userId]);
+      this._run(`DELETE FROM events WHERE user_id = ?`, [userId]);
+      this._run(`DELETE FROM user_special_remarks WHERE user_id = ?`, [userId]);
+      this._run(`DELETE FROM users WHERE id = ?`, [userId]);
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: `영구 삭제 실패: ${e.message}` };
+    }
+  }
+
+  // 종결일로부터 1년 이상 지난 종결자 자동 영구 삭제
+  purgeExpiredUsers() {
+    try {
+      const expired = this._queryAll(
+        `SELECT id FROM users WHERE status = 'terminated' AND deleted_at IS NOT NULL
+         AND date(deleted_at) <= date('now', '-1 year')`
+      );
+      for (const u of expired) {
+        this.purgeUser(u.id);
+      }
+      return { success: true, count: expired.length };
+    } catch (e) {
+      return { success: false, message: e.message };
     }
   }
 
@@ -575,7 +653,11 @@ class DatabaseManager {
 
       // 새로 삽입된 이벤트 조회 (이름, 번호 포함)
       const eventInfo = this._queryOne(`
-        SELECT e.*, u.number, u.name
+        SELECT e.*, u.number, u.name,
+        (SELECT GROUP_CONCAT(sr.name, ', ')
+         FROM user_special_remarks usr
+         JOIN special_remarks sr ON usr.remark_id = sr.id
+         WHERE usr.user_id = e.user_id AND sr.is_active = 1) as special_remarks
         FROM events e JOIN users u ON e.user_id = u.id
         WHERE e.id = ?
       `, [newId]);
@@ -713,7 +795,11 @@ class DatabaseManager {
     const today = this._kstToday();
     console.log(`[DB:getTodayEvents] today=${today}`);
     const events = this._queryAll(`
-      SELECT e.*, u.number, u.name
+      SELECT e.*, u.number, u.name,
+        (SELECT GROUP_CONCAT(sr.name, ', ')
+         FROM user_special_remarks usr
+         JOIN special_remarks sr ON usr.remark_id = sr.id
+         WHERE usr.user_id = e.user_id AND sr.is_active = 1) as special_remarks
       FROM events e JOIN users u ON e.user_id = u.id
       WHERE e.created_at BETWEEN ? || ' 00:00:00' AND ? || ' 23:59:59'
       AND u.deleted_at IS NULL
@@ -750,12 +836,12 @@ class DatabaseManager {
     }
   }
 
-  updateSpecialRemark(remarkId, name, description, isActive) {
+  updateSpecialRemark(remarkId, name, description, isActive, startDate, endDate) {
     try {
       const existing = this._queryOne(`SELECT id FROM special_remarks WHERE name = ? AND id != ?`, [name, remarkId]);
       if (existing) return { success: false, message: `이미 존재하는 이름입니다: ${name}` };
-      this._run(`UPDATE special_remarks SET name = ?, description = ?, is_active = ? WHERE id = ?`,
-        [name, description || null, isActive ? 1 : 0, remarkId]);
+      this._run(`UPDATE special_remarks SET name = ?, description = ?, is_active = ?, start_date = ?, end_date = ? WHERE id = ?`,
+        [name, description || null, isActive ? 1 : 0, startDate || null, endDate || null, remarkId]);
       return { success: true, message: '특이사항 수정 성공' };
     } catch (e) {
       return { success: false, message: `특이사항 수정 실패: ${e.message}` };

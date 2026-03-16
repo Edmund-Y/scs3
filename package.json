@@ -40,6 +40,7 @@
   "dependencies": {
     "chart.js": "^4.5.1",
     "electron-updater": "^6.8.3",
+    "serialport": "^13.0.0",
     "sql.js": "^1.11.0"
   }
 }

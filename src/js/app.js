@@ -364,10 +364,23 @@ class CountPage {
     // 런타임 설정 적용
     try {
       const allSettings = await window.api.getAllSettings();
-      // 글꼴 크기
-      const fontSize = parseInt(allSettings.ui_font_size || '14', 10);
-      if (fontSize && fontSize !== 14) {
-        document.documentElement.style.fontSize = fontSize + 'px';
+      // 글꼴 크기 (CSS 변수 적용)
+      const fsMap = {
+        ui_fs_title: '--fs-title', ui_fs_subtitle: '--fs-subtitle',
+        ui_fs_body: '--fs-body', ui_fs_label: '--fs-label', ui_fs_small: '--fs-small',
+        ui_fs_sidebar_brand: '--fs-sidebar-brand', ui_fs_sidebar_nav: '--fs-sidebar-nav',
+        ui_fs_clock: '--fs-clock', ui_fs_footer: '--fs-footer',
+        ui_fs_stat: '--fs-stat',
+        ui_fs_count_clock: '--fs-count-clock', ui_fs_count_total: '--fs-count-total',
+        ui_fs_count_meal: '--fs-count-meal', ui_fs_count_meal_label: '--fs-count-meal-label',
+        ui_fs_card_time: '--fs-card-time', ui_fs_card_name: '--fs-card-name',
+        ui_fs_card_remarks: '--fs-card-remarks',
+        ui_fs_table_header: '--fs-table-header', ui_fs_table_body: '--fs-table-body',
+        ui_fs_toast: '--fs-toast',
+      };
+      for (const [key, cssVar] of Object.entries(fsMap)) {
+        const val = allSettings[key];
+        if (val) document.documentElement.style.setProperty(cssVar, val + 'px');
       }
       // 식권 버튼 표시/숨김
       if (allSettings.ui_show_ticket_button === '0') {
@@ -451,24 +464,33 @@ class CountPage {
       searchTimeout = setTimeout(() => this._doSearch(searchInput.value), 300);
     });
 
-    // Global Keyboard Wedge Listener (Card Scanner)
-    this._wedgeBuffer = '';
-    this._wedgeTimeout = null;
+    // 시리얼 카드 리더기 IPC 수신
+    cardLog.status('대기 중 (체크인 화면)');
+    this._handleCardData = async (cardNumber) => {
+      cardLog.scan(cardNumber, '체크인');
+      await this._processCheckIn(cardNumber);
+    };
+    this._handleCardStatus = (status) => {
+      if (status.connected) {
+        cardLog.connected(status.port);
+        window.app.showToast(`카드 리더기 연결됨 (${status.port})`, 'success', 2000);
+      } else {
+        const reason = status.error || '알 수 없는 오류';
+        cardLog.disconnected(reason);
+      }
+    };
+    window.api.cardReader.onData(this._handleCardData);
+    window.api.cardReader.onStatus(this._handleCardStatus);
+
+    // 검색창 Enter 키 지원 (수동 번호 입력)
     this._handleGlobalKeydown = async (e) => {
-      if (e.key === 'Enter') {
-        // If they pressed enter in the search field or completed a rapid scan
-        const val = this._wedgeBuffer.trim() || searchInput.value.trim();
+      if (e.key === 'Enter' && document.activeElement === searchInput) {
+        const val = searchInput.value.trim();
         if (val) {
           e.preventDefault();
-          this._wedgeBuffer = '';
           searchInput.value = '';
           await this._processCheckIn(val);
         }
-      } else if (e.key.length === 1) {
-        // Only buffer rapid keystrokes (typical wedge scanner behavior: <50ms between keys)
-        this._wedgeBuffer += e.key;
-        clearTimeout(this._wedgeTimeout);
-        this._wedgeTimeout = setTimeout(() => { this._wedgeBuffer = ''; }, 100);
       }
     };
     document.addEventListener('keydown', this._handleGlobalKeydown);
@@ -532,6 +554,9 @@ class CountPage {
       `;
     }
 
+    const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${event.special_remarks}</div>` : '';
+    if (remarksRow) cls += ' has-remarks';
+
     const html = `
       <div class="${cls}">
         <span class="time">${time}</span>
@@ -540,6 +565,7 @@ class CountPage {
         <div class="actions">
           ${actions}
         </div>
+        ${remarksRow}
       </div>
     `;
 
@@ -614,6 +640,8 @@ class CountPage {
       }
 
       const nameDisplay = isTicket ? '🎫 식권' : (showNumber ? `${event.number || ''} ${event.name || ''}` : `${event.name || ''}`);
+      const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${event.special_remarks}</div>` : '';
+      if (remarksRow) cls += ' has-remarks';
 
       return `
         <div class="${cls}">
@@ -623,6 +651,7 @@ class CountPage {
           <div class="actions">
             ${actions}
           </div>
+          ${remarksRow}
         </div>
       `;
     }).join('');
@@ -770,8 +799,12 @@ class CountPage {
       const allSettings = await window.api.getAllSettings();
       const autoClearMs = (parseFloat(allSettings.checkin_auto_clear_seconds || '3') * 1000);
 
-      const user = await window.api.getUserByNumber(userNumber);
+      let user = await window.api.getUserByNumber(userNumber);
       console.log(`[CountPage] getUserByNumber 결과:`, user);
+      if (!user) {
+        user = await window.api.getUserByCardNumber(userNumber);
+        console.log(`[CountPage] getUserByCardNumber 결과:`, user);
+      }
       if (!user) {
         console.warn(`[CountPage] 미등록 사용자: ${userNumber}`);
         window.app.showToast('등록되지 않은 사용자입니다', 'error', autoClearMs);
@@ -798,9 +831,15 @@ class CountPage {
             this._speak(customDupMsg || `${user.name}님 ${menuType} 중복입니다`, { eventType: 'duplicate' });
           } else {
             const customMsg = allSettings.tts_custom_checkin_msg;
-            window.app.showToast(`${user.name}님 확인되었습니다`, 'success', autoClearMs);
-            const ttsEventType = menuType === '죽식' ? 'porridge' : 'normal';
-            this._speak(customMsg || `${user.name}님 ${menuType} 첫 수령입니다`, { eventType: ttsEventType });
+            const hasRemarks = user.special_remarks;
+            if (hasRemarks) {
+              window.app.showToast(`${user.name}님 확인 (⚠ ${user.special_remarks})`, 'success', autoClearMs);
+              this._speak(`${user.name}님 ${menuType}, 특이사항 ${user.special_remarks}`, { eventType: 'remarks' });
+            } else {
+              window.app.showToast(`${user.name}님 확인되었습니다`, 'success', autoClearMs);
+              const ttsEventType = menuType === '죽식' ? 'porridge' : 'normal';
+              this._speak(customMsg || `${user.name}님 ${menuType} 첫 수령입니다`, { eventType: ttsEventType });
+            }
           }
 
           if (result.event) {
@@ -825,6 +864,8 @@ class CountPage {
     if (this._handleGlobalKeydown) {
       document.removeEventListener('keydown', this._handleGlobalKeydown);
     }
+    window.api.cardReader.offData();
+    window.api.cardReader.offStatus();
   }
 }
 
@@ -899,27 +940,31 @@ class EditPage {
     // Add user
     document.getElementById('addUserBtn').addEventListener('click', () => this._showAddUserDialog());
 
-    // Card Scanner Wedge Listener
-    this._wedgeBuffer = '';
-    this._wedgeTimeout = null;
-    this._handleGlobalKeydown = async (e) => {
-      // 모달이 열려있으면 웨지 무시
-      if (document.querySelector('.modal-overlay')) return;
-
-      if (e.key === 'Enter') {
-        const val = this._wedgeBuffer.trim();
-        if (val) {
-          e.preventDefault();
-          this._wedgeBuffer = '';
-          await this._handleCardScan(val);
-        }
-      } else if (e.key.length === 1) {
-        this._wedgeBuffer += e.key;
-        clearTimeout(this._wedgeTimeout);
-        this._wedgeTimeout = setTimeout(() => { this._wedgeBuffer = ''; }, 100);
+    // 시리얼 카드 리더기 IPC 수신
+    cardLog.status('대기 중 (편집 화면)');
+    this._handleCardData = async (cardNumber) => {
+      // 카드 입력 필드가 비어있는 모달이면 카드 번호 채우기 (재등록/신규등록)
+      const editCardInput = document.getElementById('editCard');
+      const addCardInput = document.getElementById('addCard');
+      const activeCardInput = (editCardInput?.value === '' && editCardInput) || (addCardInput?.value === '' && addCardInput);
+      if (activeCardInput) {
+        activeCardInput.value = cardNumber;
+        cardLog.status(`카드 인식 (입력 필드): ${cardNumber}`);
+        return;
+      }
+      // 모달이 열려있으면 무시
+      if (document.querySelector('.modal-overlay')) {
+        cardLog.status(`인식됨 (모달 열려있어 무시): ${cardNumber}`);
+        return;
+      }
+      cardLog.scan(cardNumber, '편집');
+      try {
+        await this._handleCardScan(cardNumber);
+      } catch (e) {
+        cardLog.error('_handleCardScan 오류', e);
       }
     };
-    document.addEventListener('keydown', this._handleGlobalKeydown);
+    window.api.cardReader.onData(this._handleCardData);
 
     await this._loadUsers();
   }
@@ -1161,23 +1206,26 @@ class EditPage {
     `;
     document.body.appendChild(overlay);
 
+    const addCardEl = overlay.querySelector('#addCard');
+    const addNumberEl = overlay.querySelector('#addNumber');
+    const addNameEl = overlay.querySelector('#addName');
+    const addNotesEl = overlay.querySelector('#addNotes');
+
     // prefillCard가 있으면 카드 필드에 pre-fill
-    if (prefillCard) {
-      document.getElementById('addCard').value = prefillCard;
-    }
+    if (prefillCard) addCardEl.value = prefillCard;
 
     overlay.querySelector('#addCardClear').addEventListener('click', () => {
-      document.getElementById('addCard').value = '';
-      document.getElementById('addCard').focus();
+      addCardEl.value = '';
+      addCardEl.focus();
     });
 
     overlay.querySelector('#addCancel').addEventListener('click', () => overlay.remove());
 
     overlay.querySelector('#addConfirm').addEventListener('click', async () => {
-      const number = document.getElementById('addNumber').value.trim();
-      const name = document.getElementById('addName').value.trim();
-      const cardNumber = document.getElementById('addCard').value.trim();
-      const notes = document.getElementById('addNotes').value.trim();
+      const number = addNumberEl.value.trim();
+      const name = addNameEl.value.trim();
+      const cardNumber = addCardEl.value.trim();
+      const notes = addNotesEl.value.trim();
       if (!number || !name) {
         await window.api.showError('입력 오류', '번호와 이름은 필수입니다.');
         return;
@@ -1219,7 +1267,10 @@ class EditPage {
       const result = await window.api.addUser(number, name, notes || null, cardNumber || null);
       if (result.success) {
         overlay.remove();
-        window.app.showToast('새 사용자가 추가되었습니다', 'success');
+        const toastMsg = result.message && result.message.includes('카드 추가 실패')
+          ? result.message
+          : '새 사용자가 추가되었습니다';
+        window.app.showToast(toastMsg, result.message && result.message.includes('카드 추가 실패') ? 'warning' : 'success');
         await this._loadUsers();
       } else {
         await window.api.showError('추가 실패', result.message);
@@ -1260,13 +1311,19 @@ class EditPage {
           <!-- 상태 관리 -->
           <div style="border-bottom: 1px solid var(--divider); padding-bottom: 16px;">
             <div style="font-size: 13px; font-weight: 600; color: var(--accent-cyan); margin-bottom: 12px;">⚙️ 상태 관리</div>
-            <div style="display: flex; align-items: center; gap: 12px; background: var(--bg-medium); border-radius: var(--radius-sm); padding: 12px 16px;">
-              <label class="switch">
-                <input type="checkbox" id="editSuspended" ${user.status === 'suspended' ? 'checked' : ''}>
-                <span class="slider"></span>
-              </label>
-              <span style="font-size: 13px;">일시정지 상태</span>
-            </div>
+            ${user.status === 'terminated'
+              ? `<div style="display: flex; align-items: center; gap: 12px; background: var(--bg-medium); border-radius: var(--radius-sm); padding: 12px 16px;">
+                   <span style="font-size: 13px; color: var(--error);">종결 상태</span>
+                   <button class="btn btn-ghost btn-sm" id="editReactivate" style="margin-left: auto; color: var(--success);">활성으로 복구</button>
+                 </div>`
+              : `<div style="display: flex; align-items: center; gap: 12px; background: var(--bg-medium); border-radius: var(--radius-sm); padding: 12px 16px;">
+                   <label class="switch">
+                     <input type="checkbox" id="editSuspended" ${user.status === 'suspended' ? 'checked' : ''}>
+                     <span class="slider"></span>
+                   </label>
+                   <span style="font-size: 13px;">일시정지 상태</span>
+                 </div>`
+            }
           </div>
 
           <!-- 카드 관리 -->
@@ -1282,6 +1339,7 @@ class EditPage {
           </div>
         </div>
         <div style="display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end;">
+          ${user.status === 'terminated' ? `<button class="btn btn-danger" id="editPurge" style="margin-right: auto;">즉시 영구 삭제</button>` : ''}
           <button class="btn btn-ghost" id="editCancel">취소</button>
           <button class="btn btn-primary" id="editConfirm">저장</button>
         </div>
@@ -1297,13 +1355,55 @@ class EditPage {
       reissueMode = true;
     });
 
+    if (user.status === 'terminated') {
+      overlay.querySelector('#editPurge').addEventListener('click', async () => {
+        const resp = await window.api.showMessage({
+          type: 'warning',
+          buttons: ['취소', '영구 삭제'],
+          defaultId: 0,
+          title: '영구 삭제 확인',
+          message: `[${user.number}] ${user.name}\n\n이 사용자의 모든 데이터(카드, 이벤트, 특이사항)를 영구적으로 삭제합니다.\n이 작업은 되돌릴 수 없습니다.`
+        });
+        if (resp !== 1) return;
+        const result = await window.api.purgeUser(userId);
+        if (!result.success) {
+          await window.api.showError('삭제 실패', result.message);
+          return;
+        }
+        overlay.remove();
+        window.app.showToast('사용자가 영구 삭제되었습니다', 'success');
+        await this._loadUsers(document.getElementById('editSearch')?.value || '');
+      });
+    }
+
+    if (user.status === 'terminated') {
+      overlay.querySelector('#editReactivate').addEventListener('click', async () => {
+        const resp = await window.api.showMessage({
+          type: 'question',
+          buttons: ['취소', '복구'],
+          defaultId: 0,
+          title: '종결 복구 확인',
+          message: `[${user.number}] ${user.name}\n\n이 사용자를 활성 상태로 복구하시겠습니까?`
+        });
+        if (resp !== 1) return;
+        const result = await window.api.reactivateUser(userId);
+        if (!result.success) {
+          await window.api.showError('복구 실패', result.message);
+          return;
+        }
+        overlay.remove();
+        window.app.showToast('사용자가 활성 상태로 복구되었습니다', 'success');
+        await this._loadUsers(document.getElementById('editSearch')?.value || '');
+      });
+    }
+
     overlay.querySelector('#editCancel').addEventListener('click', () => overlay.remove());
 
     overlay.querySelector('#editConfirm').addEventListener('click', async () => {
       const name = document.getElementById('editName').value.trim();
       const notes = document.getElementById('editNotes').value.trim();
       const newCardNumber = document.getElementById('editCard').value.trim();
-      const isSuspended = document.getElementById('editSuspended').checked;
+      const isSuspended = document.getElementById('editSuspended')?.checked ?? false;
 
       // 1. 기본 정보 업데이트
       const result = await window.api.updateUser(userId, name, notes);
@@ -1362,9 +1462,7 @@ class EditPage {
 
   cleanup() {
     clearTimeout(this._searchTimeout);
-    if (this._handleGlobalKeydown) {
-      document.removeEventListener('keydown', this._handleGlobalKeydown);
-    }
+    window.api.cardReader.offData();
   }
 }
 
@@ -1518,6 +1616,9 @@ class SpecialRemarksPage {
             <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5; min-height: 18px;">
               ${r.description || '<span style="opacity:0.5;">설명 없음</span>'}
             </div>
+            ${r.start_date || r.end_date ? `<div style="font-size: 11px; color: var(--text-dim); margin-top: 8px; display: flex; align-items: center; gap: 4px;">
+              <span>📅</span><span>${r.start_date || '?'} ~ ${r.end_date || '?'}</span>
+            </div>` : ''}
           </div>
           <div style="padding: 10px 18px; background: var(--bg-medium);
             border-top: 1px solid var(--divider);
@@ -1602,6 +1703,21 @@ class SpecialRemarksPage {
                 style="font-size: 18px; color: var(--text-muted);">✕</button>
             </div>
           </div>
+        </div>
+
+        <!-- 기간 설정 -->
+        <div style="padding: 10px 24px; border-bottom: 1px solid var(--divider); flex-shrink: 0;
+          display: flex; align-items: center; gap: 12px; background: var(--bg-medium);">
+          <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap;">📅 기간</span>
+          <input type="date" id="inlineRemarkStartDate" value="${remark.start_date || ''}"
+            style="background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+              color: var(--text-primary); padding: 4px 8px; font-size: 12px; outline: none;" />
+          <span style="font-size: 12px; color: var(--text-muted);">~</span>
+          <input type="date" id="inlineRemarkEndDate" value="${remark.end_date || ''}"
+            style="background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+              color: var(--text-primary); padding: 4px 8px; font-size: 12px; outline: none;" />
+          <button id="inlineClearDates" style="background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+            color: var(--text-muted); padding: 4px 8px; font-size: 11px; cursor: pointer;">초기화</button>
         </div>
 
         <!-- 바디: 2-패널 -->
@@ -1741,11 +1857,14 @@ class SpecialRemarksPage {
     });
 
     // ── 인라인 편집 ──
-    const nameInput   = overlay.querySelector('#inlineRemarkName');
-    const descInput   = overlay.querySelector('#inlineRemarkDesc');
-    const activeChk   = overlay.querySelector('#inlineRemarkActive');
-    const activeLabel = overlay.querySelector('#inlineActiveLabel');
-    const saveBtn     = overlay.querySelector('#inlineSaveBtn');
+    const nameInput      = overlay.querySelector('#inlineRemarkName');
+    const descInput      = overlay.querySelector('#inlineRemarkDesc');
+    const activeChk      = overlay.querySelector('#inlineRemarkActive');
+    const activeLabel    = overlay.querySelector('#inlineActiveLabel');
+    const saveBtn        = overlay.querySelector('#inlineSaveBtn');
+    const startDateInput = overlay.querySelector('#inlineRemarkStartDate');
+    const endDateInput   = overlay.querySelector('#inlineRemarkEndDate');
+    const clearDatesBtn  = overlay.querySelector('#inlineClearDates');
 
     const setDirty = (dirty) => {
       saveBtn.disabled = !dirty;
@@ -1757,10 +1876,19 @@ class SpecialRemarksPage {
       nameInput.value.trim() !== remark.name
       || descInput.value.trim() !== (remark.description || '')
       || activeChk.checked !== !!remark.is_active
+      || startDateInput.value !== (remark.start_date || '')
+      || endDateInput.value !== (remark.end_date || '')
     );
 
     nameInput.addEventListener('input', checkDirty);
     descInput.addEventListener('input', checkDirty);
+    startDateInput.addEventListener('change', checkDirty);
+    endDateInput.addEventListener('change', checkDirty);
+    clearDatesBtn.addEventListener('click', () => {
+      startDateInput.value = '';
+      endDateInput.value = '';
+      checkDirty();
+    });
     activeChk.addEventListener('change', () => {
       activeLabel.textContent = activeChk.checked ? '활성' : '비활성';
       activeLabel.style.color = activeChk.checked ? 'var(--success)' : 'var(--text-muted)';
@@ -1770,11 +1898,15 @@ class SpecialRemarksPage {
     saveBtn.addEventListener('click', async () => {
       const name = nameInput.value.trim();
       if (!name) { nameInput.focus(); return; }
-      const result = await window.api.updateSpecialRemark(remark.id, name, descInput.value.trim(), activeChk.checked);
+      const sd = startDateInput.value || null;
+      const ed = endDateInput.value || null;
+      const result = await window.api.updateSpecialRemark(remark.id, name, descInput.value.trim(), activeChk.checked, sd, ed);
       if (result.success) {
         remark.name        = name;
         remark.description = descInput.value.trim();
         remark.is_active   = activeChk.checked ? 1 : 0;
+        remark.start_date  = sd;
+        remark.end_date    = ed;
         setDirty(false);
         await this._loadRemarks();
         window.app.showToast('저장됐습니다', 'success');
@@ -1886,6 +2018,14 @@ class SpecialRemarksPage {
             <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">설명 (선택)</label>
             <input class="input" id="remarkDesc" placeholder="간단한 설명을 입력하세요" />
           </div>
+          <div>
+            <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">기간 (선택)</label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="date" class="input" id="remarkStartDate" style="flex: 1; font-size: 12px;" />
+              <span style="font-size: 12px; color: var(--text-muted);">~</span>
+              <input type="date" class="input" id="remarkEndDate" style="flex: 1; font-size: 12px;" />
+            </div>
+          </div>
         </div>
         <div style="display: flex; gap: 8px; margin-top: 24px; justify-content: flex-end;">
           <button class="btn btn-ghost" id="remarkCancel">취소</button>
@@ -1902,7 +2042,9 @@ class SpecialRemarksPage {
     overlay.querySelector('#remarkConfirm').addEventListener('click', async () => {
       const name = nameInput.value.trim();
       if (!name) { nameInput.focus(); return; }
-      const result = await window.api.addSpecialRemark(name, overlay.querySelector('#remarkDesc').value.trim(), 0, null, null, 1);
+      const sd = overlay.querySelector('#remarkStartDate').value || null;
+      const ed = overlay.querySelector('#remarkEndDate').value || null;
+      const result = await window.api.addSpecialRemark(name, overlay.querySelector('#remarkDesc').value.trim(), 0, sd, ed, 1);
       if (result.success) { overlay.remove(); await this._loadRemarks(); }
       else { await window.api.showError('추가 실패', result.message); }
     });
@@ -2097,7 +2239,15 @@ class SettingsPage {
       {
         id: 'display', icon: '🖥️', name: '화면 표시', color: '#ec4899',
         desc: '화면 레이아웃 및 UI 설정',
-        keys: ['ui_font_size', 'ui_fullscreen_on_start', 'ui_show_user_number', 'ui_usage_list_max', 'ui_show_ticket_button'],
+        keys: [
+          'ui_fs_title', 'ui_fs_subtitle', 'ui_fs_body', 'ui_fs_label', 'ui_fs_small',
+          'ui_fs_sidebar_brand', 'ui_fs_sidebar_nav', 'ui_fs_clock', 'ui_fs_footer',
+          'ui_fs_stat',
+          'ui_fs_count_clock', 'ui_fs_count_total', 'ui_fs_count_meal', 'ui_fs_count_meal_label',
+          'ui_fs_card_time', 'ui_fs_card_name', 'ui_fs_card_remarks',
+          'ui_fs_table_header', 'ui_fs_table_body', 'ui_fs_toast',
+          'ui_fullscreen_on_start', 'ui_show_user_number', 'ui_usage_list_max', 'ui_show_ticket_button'
+        ],
       },
       {
         id: 'hardware', icon: '🔌', name: '하드웨어', color: '#ffa500',
@@ -2143,7 +2293,26 @@ class SettingsPage {
       tts_read_recent_duplicate:   { label: '단시간 중복 안내',      desc: '판정 시간 내 재시도 시 안내', type: 'bool' },
       tts_custom_checkin_msg:      { label: '체크인 멘트',          desc: '비워두면 기본 멘트 사용', type: 'text', placeholder: '예: {name}님 환영합니다' },
       tts_custom_duplicate_msg:    { label: '중복 멘트',            desc: '비워두면 기본 멘트 사용', type: 'text', placeholder: '예: {name}님 이미 수령하셨습니다' },
-      ui_font_size:                { label: '글꼴 크기',            desc: '앱 전체 기본 글꼴 크기 (재시작 필요)', type: 'number', unit: 'px' },
+      ui_fs_title:                 { label: '페이지 제목',           desc: '상단 헤더의 페이지 이름 (예: "홈", "실시간 현황", "설정")', type: 'number', unit: 'px', defaultValue: '26' },
+      ui_fs_subtitle:              { label: '부제목 / 섹션 제목',    desc: '모달 제목, 설정 그룹 제목 (예: "화면 표시", "백업")', type: 'number', unit: 'px', defaultValue: '20' },
+      ui_fs_body:                  { label: '본문 (기본)',           desc: '일반 텍스트, 버튼, 입력 필드 등 기본 글꼴', type: 'number', unit: 'px', defaultValue: '14' },
+      ui_fs_label:                 { label: '라벨',                desc: '설정 항목 이름, 카드 하단 라벨 (예: "오늘 이용", "죽식")', type: 'number', unit: 'px', defaultValue: '14' },
+      ui_fs_small:                 { label: '보조 텍스트',           desc: '설정 설명글, 버튼 작은 글씨, 버전 등 회색 보조 텍스트', type: 'number', unit: 'px', defaultValue: '12' },
+      ui_fs_sidebar_brand:         { label: '사이드바 — 앱 이름',    desc: '좌측 사이드바 상단 "경로식당" 제목', type: 'number', unit: 'px', defaultValue: '20' },
+      ui_fs_sidebar_nav:           { label: '사이드바 — 메뉴',       desc: '좌측 사이드바 메뉴 항목 (예: "홈", "실시간 현황")', type: 'number', unit: 'px', defaultValue: '15' },
+      ui_fs_clock:                 { label: '헤더 시계',             desc: '상단 오른쪽 현재 시각 표시', type: 'number', unit: 'px', defaultValue: '16' },
+      ui_fs_footer:                { label: '하단 푸터',             desc: '화면 최하단 상태 표시줄 텍스트', type: 'number', unit: 'px', defaultValue: '11' },
+      ui_fs_stat:                  { label: '홈 — 통계 숫자',        desc: '홈 페이지 카드의 큰 숫자 (예: 이용자 수 "127")', type: 'number', unit: 'px', defaultValue: '42' },
+      ui_fs_count_clock:           { label: '현황 — 시계',           desc: '실시간 현황 상단 시계 숫자', type: 'number', unit: 'px', defaultValue: '28' },
+      ui_fs_count_total:           { label: '현황 — 총 이용자 수',    desc: '실시간 현황 상단 총 이용자 큰 숫자', type: 'number', unit: 'px', defaultValue: '44' },
+      ui_fs_count_meal:            { label: '현황 — 식사 유형 숫자',  desc: '실시간 현황 일반식/죽식 숫자', type: 'number', unit: 'px', defaultValue: '30' },
+      ui_fs_count_meal_label:      { label: '현황 — 식사 유형 라벨',  desc: '실시간 현황 "일반식", "죽식" 라벨', type: 'number', unit: 'px', defaultValue: '10' },
+      ui_fs_card_time:             { label: '현황 카드 — 시간',      desc: '이용 현황 카드의 체크인 시간 (예: "12:34")', type: 'number', unit: 'px', defaultValue: '12' },
+      ui_fs_card_name:             { label: '현황 카드 — 이름',      desc: '이용 현황 카드의 이용자 이름', type: 'number', unit: 'px', defaultValue: '13' },
+      ui_fs_card_remarks:          { label: '현황 카드 — 특이사항',   desc: '이용 현황 카드 하단의 특이사항 메모', type: 'number', unit: 'px', defaultValue: '11' },
+      ui_fs_table_header:          { label: '테이블 — 헤더',         desc: '사용자 관리 등 테이블 상단 컬럼명', type: 'number', unit: 'px', defaultValue: '11' },
+      ui_fs_table_body:            { label: '테이블 — 본문',         desc: '사용자 관리 등 테이블 내용 텍스트', type: 'number', unit: 'px', defaultValue: '13' },
+      ui_fs_toast:                 { label: '알림 메시지',           desc: '상단 토스트 알림 텍스트 (체크인 성공 등)', type: 'number', unit: 'px', defaultValue: '16' },
       ui_fullscreen_on_start:      { label: '시작 시 전체 화면',     desc: '앱 실행 시 자동 전체 화면 (재시작 필요)', type: 'bool' },
       ui_show_user_number:         { label: '번호 표시',            desc: '이용 현황 목록에 사용자 번호 표시', type: 'bool' },
       ui_usage_list_max:           { label: '현황 표시 수',          desc: '실시간 현황에 표시할 최대 이벤트 수', type: 'number', unit: '건' },
@@ -2333,7 +2502,7 @@ class SettingsPage {
     for (const key of keys) {
       const m = meta[key];
       if (!m) continue;
-      const value = this._allSettings[key];
+      const value = this._allSettings[key] ?? m.defaultValue ?? undefined;
       html += `<div class="s-row" data-setting-key="${key}">`;
       html += `<div class="s-row-info"><div class="s-row-label">${m.label}</div><div class="s-row-desc">${m.desc}</div></div>`;
       html += `<div class="s-row-control">${this._renderControl(key, m, value)}</div>`;
@@ -2390,6 +2559,24 @@ class SettingsPage {
 
         this._allSettings[key] = value;
         await window.api.setSetting(key, value);
+
+        // 글꼴 크기 즉시 반영
+        const _fsMap = {
+          ui_fs_title: '--fs-title', ui_fs_subtitle: '--fs-subtitle',
+          ui_fs_body: '--fs-body', ui_fs_label: '--fs-label', ui_fs_small: '--fs-small',
+          ui_fs_sidebar_brand: '--fs-sidebar-brand', ui_fs_sidebar_nav: '--fs-sidebar-nav',
+          ui_fs_clock: '--fs-clock', ui_fs_footer: '--fs-footer',
+          ui_fs_stat: '--fs-stat',
+          ui_fs_count_clock: '--fs-count-clock', ui_fs_count_total: '--fs-count-total',
+          ui_fs_count_meal: '--fs-count-meal', ui_fs_count_meal_label: '--fs-count-meal-label',
+          ui_fs_card_time: '--fs-card-time', ui_fs_card_name: '--fs-card-name',
+          ui_fs_card_remarks: '--fs-card-remarks',
+          ui_fs_table_header: '--fs-table-header', ui_fs_table_body: '--fs-table-body',
+          ui_fs_toast: '--fs-toast',
+        };
+        if (_fsMap[key] && value) {
+          document.documentElement.style.setProperty(_fsMap[key], value + 'px');
+        }
 
         // 저장 피드백 애니메이션
         const row = el.closest('.s-row');
@@ -2494,19 +2681,209 @@ class PlaceholderPage {
 /* ================================================================
    Initialize
    ================================================================ */
+// ==================== 카드 리더기 웹 콘솔 로거 ====================
+// DevTools 필터 박스에 "[카드리더기]" 입력 시 해당 로그만 표시됨
+// Verbose 탭에서 상태 로그, Info 탭에서 인식 로그 분리 가능
+const cardLog = (() => {
+  const TAG   = '[카드리더기]';
+  const STYLE_TAG    = 'background:#0e7490;color:#fff;border-radius:3px;padding:1px 6px;font-weight:bold;';
+  const STYLE_LABEL  = 'color:#22d3ee;font-weight:bold;';
+  const STYLE_VALUE  = 'color:#f0f9ff;';
+  const STYLE_RESET  = '';
+
+  return {
+    status(msg) {
+      // Verbose 레벨 — DevTools 필터에서 "Verbose" 체크 시 표시
+      console.debug(`%c${TAG}%c 상태 %c${msg}`, STYLE_TAG, STYLE_LABEL, STYLE_RESET);
+    },
+    connected(port) {
+      console.info(`%c${TAG}%c 연결됨 %c${port}`, STYLE_TAG, STYLE_LABEL, STYLE_VALUE);
+    },
+    disconnected(reason) {
+      console.warn(`%c${TAG}%c 연결 끊김 %c${reason || ''}`, STYLE_TAG, STYLE_LABEL, STYLE_RESET);
+    },
+    scan(cardNumber, context) {
+      // 카드 인식 시 접을 수 있는 그룹으로 표시
+      console.groupCollapsed(`%c${TAG}%c 카드 인식 %c${cardNumber}%c  (${context})`, STYLE_TAG, STYLE_LABEL, STYLE_VALUE, STYLE_RESET);
+      console.debug('카드번호:', cardNumber);
+      console.debug('컨텍스트:', context);
+      console.debug('시각:', new Date().toLocaleTimeString('ko-KR'));
+      console.groupEnd();
+    },
+    result(cardNumber, result) {
+      if (result && result.success === false) {
+        console.warn(`%c${TAG}%c 처리 실패 %c${cardNumber} → ${result.message}`, STYLE_TAG, STYLE_LABEL, STYLE_RESET);
+      } else {
+        console.debug(`%c${TAG}%c 처리 완료 %c${cardNumber}`, STYLE_TAG, STYLE_LABEL, STYLE_VALUE);
+      }
+    },
+    error(msg, err) {
+      console.error(`%c${TAG}%c 오류: ${msg}`, STYLE_TAG, STYLE_RESET, err || '');
+    },
+  };
+})();
+
+/* ============================================================
+   Web Console — 앱 내 로그 뷰어
+   ============================================================ */
+class WebConsole {
+  constructor() {
+    this.entries = [];
+    this.maxEntries = 1000;
+    this.filterLevel = 'ALL';
+    this.logLevelSetting = 'DEBUG';
+    this.LEVELS = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+    this._isLogging = false;
+
+    this._el = document.getElementById('webConsole');
+    this._body = document.getElementById('webConsoleBody');
+    this._filterSelect = document.getElementById('webConsoleFilter');
+
+    this._initUI();
+    this._interceptConsole();
+    this._listenMainProcess();
+    this._loadLogLevel();
+  }
+
+  _initUI() {
+    // 토글 버튼 (footer)
+    document.getElementById('footerConsoleBtn').addEventListener('click', () => this.toggle());
+    // 닫기 버튼
+    document.getElementById('webConsoleToggle').addEventListener('click', () => this.toggle());
+    // 지우기
+    document.getElementById('webConsoleClear').addEventListener('click', () => this.clear());
+    // 필터
+    this._filterSelect.addEventListener('change', (e) => {
+      this.filterLevel = e.target.value;
+      this._rerender();
+    });
+  }
+
+  toggle() {
+    this._el.classList.toggle('collapsed');
+  }
+
+  clear() {
+    this.entries = [];
+    this._body.innerHTML = '';
+  }
+
+  async _loadLogLevel() {
+    try {
+      const level = await window.api.getSetting('log_level', 'DEBUG');
+      this.logLevelSetting = level || 'DEBUG';
+    } catch (e) { /* default DEBUG */ }
+  }
+
+  _interceptConsole() {
+    const self = this;
+    const origLog = console.log;
+    const origWarn = console.warn;
+    const origError = console.error;
+    const origDebug = console.debug;
+
+    console.log = function (...args) {
+      origLog.apply(console, args);
+      if (!self._isLogging) {
+        if (window.api && window.api.log) window.api.log('INFO', ...args);
+        self.addEntry('INFO', self._argsToString(args), 'renderer');
+      }
+    };
+    console.warn = function (...args) {
+      origWarn.apply(console, args);
+      if (!self._isLogging) {
+        if (window.api && window.api.log) window.api.log('WARNING', ...args);
+        self.addEntry('WARNING', self._argsToString(args), 'renderer');
+      }
+    };
+    console.error = function (...args) {
+      origError.apply(console, args);
+      if (!self._isLogging) {
+        if (window.api && window.api.log) window.api.log('ERROR', ...args);
+        self.addEntry('ERROR', self._argsToString(args), 'renderer');
+      }
+    };
+    console.debug = function (...args) {
+      origDebug.apply(console, args);
+      if (!self._isLogging) {
+        self.addEntry('DEBUG', self._argsToString(args), 'renderer');
+      }
+    };
+  }
+
+  _listenMainProcess() {
+    if (window.api && window.api.onLogEntry) {
+      window.api.onLogEntry((entry) => {
+        this.addEntry(entry.level, entry.message, entry.source || 'main', entry.timestamp);
+      });
+    }
+  }
+
+  _argsToString(args) {
+    return args.map(a => {
+      if (typeof a === 'string') return a;
+      try { return JSON.stringify(a); } catch { return String(a); }
+    }).join(' ');
+  }
+
+  addEntry(level, message, source, timestamp) {
+    // %c 스타일 구문 제거
+    message = message.replace(/%c/g, '');
+
+    const lvl = (level || 'INFO').toUpperCase();
+    const ts = timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+    // 설정 기반 레벨 필터링
+    if ((this.LEVELS[lvl] ?? 0) < (this.LEVELS[this.logLevelSetting] ?? 0)) return;
+
+    const entry = { level: lvl, message, source: source || '', timestamp: ts };
+    this.entries.push(entry);
+    if (this.entries.length > this.maxEntries) this.entries.shift();
+
+    // UI 필터 통과 시 렌더링
+    if (this._passesFilter(entry)) {
+      this._renderEntry(entry);
+    }
+  }
+
+  _passesFilter(entry) {
+    if (this.filterLevel === 'ALL') return true;
+    return (this.LEVELS[entry.level] ?? 0) >= (this.LEVELS[this.filterLevel] ?? 0);
+  }
+
+  _renderEntry(entry) {
+    this._isLogging = true;
+    const div = document.createElement('div');
+    div.className = `log-entry log-${entry.level}`;
+    div.innerHTML =
+      `<span class="log-time">${entry.timestamp.slice(11)}</span>` +
+      `<span class="log-level">${entry.level}</span>` +
+      `<span class="log-source">[${entry.source}]</span>` +
+      `<span class="log-msg">${this._escapeHtml(entry.message)}</span>`;
+    this._body.appendChild(div);
+
+    // 자동 스크롤
+    this._body.scrollTop = this._body.scrollHeight;
+    this._isLogging = false;
+  }
+
+  _escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  _rerender() {
+    this._body.innerHTML = '';
+    for (const entry of this.entries) {
+      if (this._passesFilter(entry)) this._renderEntry(entry);
+    }
+  }
+}
+
 let app;
 document.addEventListener('DOMContentLoaded', () => {
-  const oldLog = console.log;
-  console.log = (...args) => {
-    oldLog.apply(console, args);
-    if (window.api && window.api.log) window.api.log('INFO', ...args);
-  };
-  const oldError = console.error;
-  console.error = (...args) => {
-    oldError.apply(console, args);
-    if (window.api && window.api.log) window.api.log('ERROR', ...args);
-  };
-
+  window.webConsole = new WebConsole();
   app = new App();
   window.app = app; // expose to global scope for inline handlers
 });

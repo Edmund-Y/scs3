@@ -59,8 +59,28 @@
       <div class="footer-status">
         <span class="status-dot"></span>
         <span id="footerStatus">준비 완료</span>
+        <button id="footerConsoleBtn" class="footer-console-btn" title="콘솔 열기/닫기">콘솔</button>
       </div>
     </footer>
+
+    <!-- Web Console -->
+    <div id="webConsole" class="web-console collapsed">
+      <div class="web-console-header">
+        <span class="web-console-title">콘솔</span>
+        <div class="web-console-controls">
+          <select id="webConsoleFilter">
+            <option value="ALL">ALL</option>
+            <option value="DEBUG">DEBUG</option>
+            <option value="INFO" selected>INFO</option>
+            <option value="WARNING">WARNING</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+          <button id="webConsoleClear" title="로그 지우기">지우기</button>
+          <button id="webConsoleToggle" title="닫기">✕</button>
+        </div>
+      </div>
+      <div id="webConsoleBody" class="web-console-body"></div>
+    </div>
   </div>
 
   <script src="js/vendor/chart.umd.js"></script>

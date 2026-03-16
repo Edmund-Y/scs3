@@ -10,6 +10,7 @@ class Logger {
     this.config = config;
     this.logDir = null;
     this.logFile = null;
+    this._window = null;
 
     const logDir = config.getLogDir();
     if (logDir) {
@@ -24,17 +25,28 @@ class Logger {
     }
   }
 
+  setWindow(win) {
+    this._window = win;
+  }
+
   _formatMessage(level, message) {
     const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
     return `${now} - ${level} - ${message}`;
   }
 
   _write(level, message) {
-    const formatted = this._formatMessage(level, message);
+    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const formatted = `${timestamp} - ${level} - ${message}`;
     console.log(formatted);
     if (this.logFile) {
       try {
         fs.appendFileSync(this.logFile, formatted + '\n');
+      } catch (e) { /* ignore */ }
+    }
+    // 렌더러 웹콘솔로 전송
+    if (this._window && !this._window.isDestroyed()) {
+      try {
+        this._window.webContents.send('log:entry', { level, message, timestamp, source: 'main' });
       } catch (e) { /* ignore */ }
     }
   }
