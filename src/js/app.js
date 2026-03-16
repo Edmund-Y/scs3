@@ -147,49 +147,114 @@ class App {
     } catch (e) { console.error('showToast 에러:', e); }
   }
 
-  showConfirm(message) {
+  /**
+   * showConfirm - 커스텀 확인 다이얼로그
+   * @param {string|object} msgOrOpts - 문자열이면 기본 확인 다이얼로그, 객체면 상세 옵션
+   *   { title, message, detail, type: 'warning'|'danger'|'info', confirmText, cancelText }
+   * @returns {Promise<boolean>}
+   */
+  showConfirm(msgOrOpts) {
+    const opts = typeof msgOrOpts === 'string'
+      ? { message: msgOrOpts }
+      : msgOrOpts;
+    const {
+      title = '',
+      message = '',
+      detail = '',
+      type = 'info',
+      confirmText = '확인',
+      cancelText = '취소',
+    } = opts;
+
     return new Promise((resolve) => {
       try {
-        console.log(`[showConfirm] message=${message}`);
+        const typeConfig = {
+          info:    { icon: 'ℹ️', accent: 'var(--accent-cyan)', btnClass: 'btn-primary' },
+          warning: { icon: '⚠️', accent: 'var(--warning)',     btnClass: 'btn-warning' },
+          danger:  { icon: '🗑️', accent: 'var(--error)',       btnClass: 'btn-danger' },
+        };
+        const cfg = typeConfig[type] || typeConfig.info;
+
         const overlay = document.createElement('div');
-        overlay.className = 'custom-confirm-overlay';
-
-        const box = document.createElement('div');
-        box.className = 'custom-confirm-box';
-
-        const text = document.createElement('p');
-        text.textContent = message;
-
-        const actions = document.createElement('div');
-        actions.className = 'custom-confirm-actions';
-
-        const btnCancel = document.createElement('button');
-        btnCancel.className = 'btn btn-ghost';
-        btnCancel.textContent = '취소';
-
-        const btnConfirm = document.createElement('button');
-        btnConfirm.className = 'btn btn-primary';
-        btnConfirm.textContent = '확인';
+        overlay.className = 'custom-dialog-overlay';
+        overlay.innerHTML = `
+          <div class="custom-dialog" style="border-top: 3px solid ${cfg.accent};">
+            ${title ? `<div class="custom-dialog-header">
+              <span class="custom-dialog-icon">${cfg.icon}</span>
+              <h4 class="custom-dialog-title">${title}</h4>
+            </div>` : ''}
+            <div class="custom-dialog-body">
+              <p class="custom-dialog-message">${message.replace(/\n/g, '<br>')}</p>
+              ${detail ? `<p class="custom-dialog-detail">${detail.replace(/\n/g, '<br>')}</p>` : ''}
+            </div>
+            <div class="custom-dialog-actions">
+              <button class="btn btn-ghost" id="dlgCancel">${cancelText}</button>
+              <button class="btn ${cfg.btnClass}" id="dlgConfirm">${confirmText}</button>
+            </div>
+          </div>
+        `;
 
         const cleanup = () => {
           overlay.remove();
-          // Remove focus so keyboard wedge doesn't accidentally trigger an old button
           document.activeElement?.blur();
         };
 
-        btnCancel.onclick = () => { console.log('Confirm Canceled'); cleanup(); resolve(false); };
-        btnConfirm.onclick = () => { console.log('Confirm OK'); cleanup(); resolve(true); };
+        overlay.querySelector('#dlgCancel').onclick = () => { cleanup(); resolve(false); };
+        overlay.querySelector('#dlgConfirm').onclick = () => { cleanup(); resolve(true); };
 
-        actions.appendChild(btnCancel);
-        actions.appendChild(btnConfirm);
-        box.appendChild(text);
-        box.appendChild(actions);
-        overlay.appendChild(box);
         document.body.appendChild(overlay);
-        console.log(`[showConfirm] DOM 구성 완료`);
       } catch (e) {
         console.error('showConfirm 에러:', e);
-        resolve(false); // fallback
+        resolve(false);
+      }
+    });
+  }
+
+  /**
+   * showAlert - 커스텀 알림 다이얼로그 (확인 버튼만)
+   * @param {string} title
+   * @param {string} message
+   * @param {'error'|'info'|'warning'} type
+   * @returns {Promise<void>}
+   */
+  showAlert(title, message, type = 'error') {
+    return new Promise((resolve) => {
+      try {
+        const typeConfig = {
+          error:   { icon: '❌', accent: 'var(--error)' },
+          warning: { icon: '⚠️', accent: 'var(--warning)' },
+          info:    { icon: 'ℹ️', accent: 'var(--accent-cyan)' },
+        };
+        const cfg = typeConfig[type] || typeConfig.error;
+
+        const overlay = document.createElement('div');
+        overlay.className = 'custom-dialog-overlay';
+        overlay.innerHTML = `
+          <div class="custom-dialog" style="border-top: 3px solid ${cfg.accent};">
+            <div class="custom-dialog-header">
+              <span class="custom-dialog-icon">${cfg.icon}</span>
+              <h4 class="custom-dialog-title">${title}</h4>
+            </div>
+            <div class="custom-dialog-body">
+              <p class="custom-dialog-message">${message.replace(/\n/g, '<br>')}</p>
+            </div>
+            <div class="custom-dialog-actions">
+              <button class="btn btn-primary" id="dlgOk">확인</button>
+            </div>
+          </div>
+        `;
+
+        const cleanup = () => {
+          overlay.remove();
+          document.activeElement?.blur();
+        };
+
+        overlay.querySelector('#dlgOk').onclick = () => { cleanup(); resolve(); };
+
+        document.body.appendChild(overlay);
+      } catch (e) {
+        console.error('showAlert 에러:', e);
+        resolve();
       }
     });
   }
@@ -287,6 +352,7 @@ class CountPage {
   constructor() {
     this._clockInterval = null;
     this._refreshInterval = null;
+    this._lastScanDetails = new Map();
   }
 
   render() {
@@ -428,12 +494,13 @@ class CountPage {
           const nextMenu = btn.dataset.menu;
 
           if (action === 'cancel') {
-            await this._cancelEvent(eventId);
+            const isTicket = !!btn.closest('.usage-card.ticket');
+            await this._cancelEvent(eventId, isTicket);
           } else if (action === 'change-menu') {
             await this._changeMenu(eventId, nextMenu);
           }
         } catch (error) {
-          await window.api.showError('버튼 클릭 오류', error.message + '\n' + error.stack);
+          await app.showAlert('버튼 클릭 오류', error.message);
         }
       });
     }
@@ -679,26 +746,30 @@ class CountPage {
       }
     } catch (e) {
       console.error(`[_changeMenu] 에러:`, e);
-      await window.api.showError('메뉴 변경 오류', e.message);
+      await app.showAlert('메뉴 변경 오류', e.message);
     }
   }
 
-  async _cancelEvent(eventId) {
+  async _cancelEvent(eventId, isTicket = false) {
     try {
-      console.log(`[_cancelEvent] Start for eventId=${eventId}`);
-      const confirmed = await app.showConfirm('해당 사용자의 오늘자 이용 기록이 모두 삭제됩니다. 계속하시겠습니까?');
+      console.log(`[_cancelEvent] Start for eventId=${eventId}, isTicket=${isTicket}`);
+      const confirmMsg = isTicket
+        ? '식권 1건을 취소하시겠습니까?'
+        : '해당 사용자의 오늘자 이용 기록이 모두 삭제됩니다. 계속하시겠습니까?';
+      const confirmed = await app.showConfirm(confirmMsg);
       console.log(`[_cancelEvent] Confirmed? ${confirmed}`);
       if (confirmed) {
         console.log(`[_cancelEvent] Calling API...`);
         const result = await window.api.cancelEventById(eventId);
         console.log(`[_cancelEvent] API Result:`, result);
         if (result && result.success === false) throw new Error(result.message);
-        app.showToast('오늘자 전체 이용 기록이 취소되었습니다.', 'warning');
+        const toastMsg = isTicket ? '식권 1건이 취소되었습니다.' : '오늘자 전체 이용 기록이 취소되었습니다.';
+        app.showToast(toastMsg, 'warning');
         await this._refreshData();
       }
     } catch (e) {
       console.error(`[_cancelEvent] 에러:`, e);
-      await window.api.showError('체크인 취소 오류', e.message);
+      await app.showAlert('체크인 취소 오류', e.message);
     }
   }
 
@@ -812,6 +883,16 @@ class CountPage {
         return;
       }
 
+      // 사용자별 쿨다운: scan_interval 이내 동일 사용자 연속 스캔 무시
+      const scanInterval = parseFloat(allSettings.scan_interval || '0.5') * 1000;
+      const now = Date.now();
+      const lastScan = this._lastScanDetails.get(user.id);
+      if (lastScan && (now - lastScan) < scanInterval) {
+        console.log(`[CountPage] 사용자 ${user.id} 쿨다운 중 (${scanInterval}ms). 무시.`);
+        return;
+      }
+      this._lastScanDetails.set(user.id, now);
+
       const isAllPorridge = document.getElementById('toggleAllPorridge')?.checked;
       const defaultMenu = allSettings.default_menu_type || '일반식';
       const menuType = isAllPorridge ? '죽식' : defaultMenu;
@@ -864,6 +945,7 @@ class CountPage {
     if (this._handleGlobalKeydown) {
       document.removeEventListener('keydown', this._handleGlobalKeydown);
     }
+    this._lastScanDetails.clear();
     window.api.cardReader.offData();
     window.api.cardReader.offStatus();
   }
@@ -1020,14 +1102,13 @@ class EditPage {
       if (action === 'suspend') {
         result = await window.api.suspendUser(userId);
       } else if (action === 'terminate') {
-        const resp = await window.api.showMessage({
-          type: 'warning',
-          buttons: ['취소', '종결'],
-          defaultId: 0,
+        const confirmed = await app.showConfirm({
           title: '사용자 종결',
-          message: '이 사용자를 종결하시겠습니까?'
+          message: '이 사용자를 종결하시겠습니까?',
+          type: 'warning',
+          confirmText: '종결',
         });
-        if (resp !== 1) return;
+        if (!confirmed) return;
         result = await window.api.terminateUser(userId);
       } else if (action === 'reactivate') {
         result = await window.api.reactivateUser(userId);
@@ -1037,11 +1118,11 @@ class EditPage {
       }
 
       if (result && !result.success) {
-        await window.api.showError('오류', result.message);
+        await app.showAlert('오류', result.message);
       }
       await this._loadUsers(document.getElementById('editSearch')?.value || '');
     } catch (e) {
-      await window.api.showError('오류', e.message);
+      await app.showAlert('오류', e.message);
     }
   }
 
@@ -1153,10 +1234,10 @@ class EditPage {
                   window.app.showToast('카드가 변경되었습니다', 'success');
                   await this._loadUsers(document.getElementById('editSearch')?.value || '');
                 } else {
-                  await window.api.showError('카드 변경 실패', result.message);
+                  await app.showAlert('카드 변경 실패', result.message);
                 }
               } catch (e) {
-                await window.api.showError('오류', e.message);
+                await app.showAlert('오류', e.message);
               }
             });
           });
@@ -1227,7 +1308,7 @@ class EditPage {
       const cardNumber = addCardEl.value.trim();
       const notes = addNotesEl.value.trim();
       if (!number || !name) {
-        await window.api.showError('입력 오류', '번호와 이름은 필수입니다.');
+        await app.showAlert('입력 오류', '번호와 이름은 필수입니다.', 'warning');
         return;
       }
 
@@ -1236,25 +1317,24 @@ class EditPage {
         const existingOwner = await window.api.getCardOwnerInfo(cardNumber);
         if (existingOwner) {
           const statusText = existingOwner.status === 'suspended' ? ' (일시정지)' : '';
-          const resp = await window.api.showMessage({
-            type: 'question',
-            buttons: ['취소', '이전'],
-            defaultId: 0,
+          const confirmed = await app.showConfirm({
             title: '카드 번호 중복',
-            message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 새 사용자에게 이전하시겠습니까?`
+            message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 새 사용자에게 이전하시겠습니까?`,
+            type: 'warning',
+            confirmText: '이전',
           });
-          if (resp !== 1) return;
+          if (!confirmed) return;
 
           // 사용자 먼저 생성 (카드 없이)
           const createResult = await window.api.addUser(number, name, notes || null, null);
           if (!createResult.success) {
-            await window.api.showError('추가 실패', createResult.message);
+            await app.showAlert('추가 실패', createResult.message);
             return;
           }
           // 카드 이전
           const transferResult = await window.api.transferCard(cardNumber, createResult.userId, `신규 등록 시 이전 (#${number} ${name})`);
           if (!transferResult.success) {
-            await window.api.showError('카드 이전 실패', transferResult.message);
+            await app.showAlert('카드 이전 실패', transferResult.message);
             return;
           }
           overlay.remove();
@@ -1273,7 +1353,7 @@ class EditPage {
         window.app.showToast(toastMsg, result.message && result.message.includes('카드 추가 실패') ? 'warning' : 'success');
         await this._loadUsers();
       } else {
-        await window.api.showError('추가 실패', result.message);
+        await app.showAlert('추가 실패', result.message);
       }
     });
   }
@@ -1357,17 +1437,17 @@ class EditPage {
 
     if (user.status === 'terminated') {
       overlay.querySelector('#editPurge').addEventListener('click', async () => {
-        const resp = await window.api.showMessage({
-          type: 'warning',
-          buttons: ['취소', '영구 삭제'],
-          defaultId: 0,
+        const confirmed = await app.showConfirm({
           title: '영구 삭제 확인',
-          message: `[${user.number}] ${user.name}\n\n이 사용자의 모든 데이터(카드, 이벤트, 특이사항)를 영구적으로 삭제합니다.\n이 작업은 되돌릴 수 없습니다.`
+          message: `[${user.number}] ${user.name}\n\n이 사용자의 모든 데이터(카드, 이벤트, 특이사항)를 영구적으로 삭제합니다.`,
+          detail: '이 작업은 되돌릴 수 없습니다.',
+          type: 'danger',
+          confirmText: '영구 삭제',
         });
-        if (resp !== 1) return;
+        if (!confirmed) return;
         const result = await window.api.purgeUser(userId);
         if (!result.success) {
-          await window.api.showError('삭제 실패', result.message);
+          await app.showAlert('삭제 실패', result.message);
           return;
         }
         overlay.remove();
@@ -1378,17 +1458,16 @@ class EditPage {
 
     if (user.status === 'terminated') {
       overlay.querySelector('#editReactivate').addEventListener('click', async () => {
-        const resp = await window.api.showMessage({
-          type: 'question',
-          buttons: ['취소', '복구'],
-          defaultId: 0,
+        const confirmed = await app.showConfirm({
           title: '종결 복구 확인',
-          message: `[${user.number}] ${user.name}\n\n이 사용자를 활성 상태로 복구하시겠습니까?`
+          message: `[${user.number}] ${user.name}\n\n이 사용자를 활성 상태로 복구하시겠습니까?`,
+          type: 'info',
+          confirmText: '복구',
         });
-        if (resp !== 1) return;
+        if (!confirmed) return;
         const result = await window.api.reactivateUser(userId);
         if (!result.success) {
-          await window.api.showError('복구 실패', result.message);
+          await app.showAlert('복구 실패', result.message);
           return;
         }
         overlay.remove();
@@ -1408,7 +1487,7 @@ class EditPage {
       // 1. 기본 정보 업데이트
       const result = await window.api.updateUser(userId, name, notes);
       if (!result.success) {
-        await window.api.showError('수정 실패', result.message);
+        await app.showAlert('수정 실패', result.message);
         return;
       }
 
@@ -1426,25 +1505,24 @@ class EditPage {
           const existingOwner = await window.api.getCardOwnerInfo(newCardNumber);
           if (existingOwner && existingOwner.id !== userId) {
             const statusText = existingOwner.status === 'suspended' ? ' (일시정지)' : '';
-            const resp = await window.api.showMessage({
-              type: 'question',
-              buttons: ['취소', '이전'],
-              defaultId: 0,
+            const confirmed = await app.showConfirm({
               title: '카드 번호 중복',
-              message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 ${user.name}에게 이전하시겠습니까?`
+              message: `이미 사용 중인 카드 번호입니다.\n\n현재 소유자: ${existingOwner.number} ${existingOwner.name}${statusText}\n\n이 카드를 ${user.name}에게 이전하시겠습니까?`,
+              type: 'warning',
+              confirmText: '이전',
             });
-            if (resp !== 1) return;
+            if (!confirmed) return;
 
             const transferResult = await window.api.transferCard(newCardNumber, userId, '사용자 정보 수정 중 이전');
             if (!transferResult.success) {
-              await window.api.showError('카드 이전 실패', transferResult.message);
+              await app.showAlert('카드 이전 실패', transferResult.message);
               return;
             }
           } else if (!existingOwner || existingOwner.id === userId) {
             // 재발급 처리
             const reissueResult = await window.api.reissueCard(userId, newCardNumber, '사용자 정보 수정 (재등록)');
             if (!reissueResult.success) {
-              await window.api.showError('카드 재발급 실패', reissueResult.message);
+              await app.showAlert('카드 재발급 실패', reissueResult.message);
               return;
             }
           }
@@ -1911,7 +1989,7 @@ class SpecialRemarksPage {
         await this._loadRemarks();
         window.app.showToast('저장됐습니다', 'success');
       } else {
-        await window.api.showError('수정 실패', result.message);
+        await app.showAlert('수정 실패', result.message);
       }
     });
 
@@ -1920,15 +1998,17 @@ class SpecialRemarksPage {
     overlay.querySelector('#remarkDetailCloseBtn').addEventListener('click', close);
 
     overlay.querySelector('#remarkDeleteBtn').addEventListener('click', async () => {
-      const resp = await window.api.showMessage({
-        type: 'warning', buttons: ['취소', '삭제'], defaultId: 0, cancelId: 0,
-        title: '특이사항 삭제', message: `"${remark.name}" 을(를) 삭제하시겠습니까?`,
-        detail: '배정된 사용자 정보도 모두 해제됩니다.'
+      const confirmed = await app.showConfirm({
+        title: '특이사항 삭제',
+        message: `"${remark.name}" 을(를) 삭제하시겠습니까?`,
+        detail: '배정된 사용자 정보도 모두 해제됩니다.',
+        type: 'danger',
+        confirmText: '삭제',
       });
-      if (resp !== 0) {
+      if (confirmed) {
         const result = await window.api.deleteSpecialRemark(remark.id);
         if (result && result.success === false) {
-          await window.api.showError('삭제 실패', result.message);
+          await app.showAlert('삭제 실패', result.message);
           return;
         }
         overlay.remove();
@@ -1993,7 +2073,7 @@ class SpecialRemarksPage {
         overlay.remove();
         if (onSaved) onSaved({ ...remark, name, description: desc, is_active: isActive ? 1 : 0 });
       } else {
-        await window.api.showError('수정 실패', result.message);
+        await app.showAlert('수정 실패', result.message);
       }
     });
 
@@ -2046,7 +2126,7 @@ class SpecialRemarksPage {
       const ed = overlay.querySelector('#remarkEndDate').value || null;
       const result = await window.api.addSpecialRemark(name, overlay.querySelector('#remarkDesc').value.trim(), 0, sd, ed, 1);
       if (result.success) { overlay.remove(); await this._loadRemarks(); }
-      else { await window.api.showError('추가 실패', result.message); }
+      else { await app.showAlert('추가 실패', result.message); }
     });
 
     // Enter 키 제출
@@ -2319,7 +2399,7 @@ class SettingsPage {
       ui_show_ticket_button:       { label: '식권 버튼',            desc: '식권 통계 카드 표시 여부', type: 'bool' },
       com_port:                    { label: 'COM 포트',             desc: '카드 리더기 시리얼 포트', type: 'text', placeholder: 'COM3' },
       baud_rate:                   { label: '전송 속도',            desc: '시리얼 통신 속도', type: 'select', options: [['9600','9600'],['19200','19200'],['38400','38400'],['115200','115200']] },
-      scan_interval:               { label: '스캔 간격',            desc: '카드 스캔 폴링 간격', type: 'number', unit: '초' },
+      scan_interval:               { label: '스캔 간격',            desc: '동일 사용자 연속 스캔 무시 시간', type: 'number', unit: '초' },
       card_debounce_time:          { label: '중복 인식 방지',        desc: '연속 카드 인식 차단 시간', type: 'number', unit: '초' },
       auto_backup:                 { label: '자동 백업',            desc: '주기적 자동 백업 활성화', type: 'bool' },
       backup_interval:             { label: '백업 주기',            desc: '자동 백업 실행 주기', type: 'select', options: [['daily','매일'],['weekly','매주'],['monthly','매월']] },
@@ -2649,15 +2729,10 @@ class SetupWizardPage {
 
       const result = await window.api.createDatabase(basePath);
       if (result.success) {
-        await window.api.showMessage({
-          type: 'info',
-          buttons: ['확인'],
-          title: '초기 설정 완료',
-          message: '초기 설정이 완료되었습니다.\n홈 페이지로 이동합니다.'
-        });
+        await app.showAlert('초기 설정 완료', '초기 설정이 완료되었습니다.\n홈 페이지로 이동합니다.', 'info');
         this.app.navigate('home');
       } else {
-        await window.api.showError('설정 실패', result.error || '알 수 없는 오류');
+        await app.showAlert('설정 실패', result.error || '알 수 없는 오류');
         btn.disabled = false;
         btn.textContent = '설정 완료';
       }

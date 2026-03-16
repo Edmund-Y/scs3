@@ -1413,32 +1413,75 @@ input, textarea {
 /* ============================================================
    Custom Confirm Modal
    ============================================================ */
-.custom-confirm-overlay {
+/* Custom Dialog (confirm / alert) */
+.custom-dialog-overlay {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
+  inset: 0;
   background: rgba(0,0,0,0.6);
   z-index: 10000;
   display: flex;
   align-items: center;
   justify-content: center;
+  backdrop-filter: blur(4px);
+  animation: fadeIn 0.2s;
 }
-.custom-confirm-box {
-  background: var(--bg-dark);
+.custom-dialog {
+  background: var(--bg-medium);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 24px;
-  min-width: 320px;
-  text-align: center;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.8);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+  min-width: 360px;
+  max-width: 480px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.7);
+  animation: slideUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
-.custom-confirm-box p {
-  margin-bottom: 24px;
-  font-size: 16px;
-}
-.custom-confirm-actions {
+.custom-dialog-header {
   display: flex;
-  gap: 12px;
-  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.custom-dialog-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.custom-dialog-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+.custom-dialog-body {
+  margin-bottom: 24px;
+}
+.custom-dialog-message {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  white-space: pre-wrap;
+}
+.custom-dialog-detail {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--bg-dark);
+  border-radius: var(--radius-sm);
+  line-height: 1.5;
+}
+.custom-dialog-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.btn-warning {
+  background: var(--warning);
+  color: #000;
+  font-weight: 600;
+}
+.btn-warning:hover {
+  background: #e69500;
 }
 
 /* ============================================================

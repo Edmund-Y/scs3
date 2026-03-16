@@ -29,9 +29,28 @@ let serialPort = null;
 let serialParser = null;
 let cardDebounceTimer = null;
 let lastCardNumber = null;
+let reconnectTimer = null;
+let intentionalClose = false;
+let lastComPort = null;
+let lastBaudRate = null;
+
+function scheduleReconnect(delayMs = 5000) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  if (!lastComPort || !lastBaudRate) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (!intentionalClose && (!serialPort || !serialPort.isOpen)) {
+      logger.info(`카드 리더기 재연결 시도: ${lastComPort}`);
+      startCardReader(lastComPort, lastBaudRate);
+    }
+  }, delayMs);
+}
 
 function startCardReader(comPort, baudRate) {
-  stopCardReader();
+  intentionalClose = false;
+  lastComPort = comPort;
+  lastBaudRate = baudRate;
+  stopCardReader(false);
 
   const { SerialPort } = require('serialport');
   const { ReadlineParser } = require('@serialport/parser-readline');
@@ -49,7 +68,7 @@ function startCardReader(comPort, baudRate) {
 
     serialParser.on('data', (data) => {
       // 제어문자 제거
-      const card = data.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim();
+      const card = data.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
       if (!card) return;
 
       // 디바운스: 동일 카드 0.3초 이내 재입력 무시
@@ -66,11 +85,13 @@ function startCardReader(comPort, baudRate) {
     serialPort.on('error', (err) => {
       logger.error(`카드 리더기 오류: ${err.message}`);
       if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: false, error: err.message });
+      if (!intentionalClose) scheduleReconnect();
     });
 
     serialPort.on('close', () => {
       logger.info('카드 리더기 연결 끊김');
       if (mainWindow) mainWindow.webContents.send('card-reader:status', { connected: false });
+      if (!intentionalClose) scheduleReconnect();
     });
 
   } catch (err) {
@@ -79,7 +100,14 @@ function startCardReader(comPort, baudRate) {
   }
 }
 
-function stopCardReader() {
+function stopCardReader(isIntentional = true) {
+  if (isIntentional) {
+    intentionalClose = true;
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (serialPort && serialPort.isOpen) {
     try { serialPort.close(); } catch (e) {}
   }

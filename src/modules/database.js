@@ -728,20 +728,34 @@ class DatabaseManager {
     try {
       console.log(`[DB:cancelEventById] eventId=${eventId}`);
 
-      // 1. 해당 이벤트의 user_id 찾기
-      const eventRow = this._queryOne(`SELECT user_id FROM events WHERE id = ?`, [eventId]);
+      // 1. 해당 이벤트의 user_id, input_method 찾기
+      const eventRow = this._queryOne(`SELECT user_id, input_method FROM events WHERE id = ?`, [eventId]);
       if (!eventRow) {
         throw new Error('이벤트를 찾을 수 없습니다.');
       }
+
+      // 식권은 단일 건만 취소 (같은 TICKET 유저를 공유하므로 전체 취소하면 안 됨)
+      if (eventRow.input_method === 'ticket') {
+        console.log(`[DB:cancelEventById] 식권 단일 취소 진행: eventId=${eventId}`);
+        this._run(`
+          UPDATE events
+          SET event_type = 'cancel'
+          WHERE id = ?
+            AND event_type = 'check_in'
+        `, [eventId]);
+        console.log(`[DB:cancelEventById] 식권 단일 취소 성공`);
+        return { success: true, message: '식권 1건 취소 성공' };
+      }
+
       const userId = eventRow.user_id;
 
       // 2. 해당 유저의 오늘자 모든 check_in 이벤트를 취소 처리
       console.log(`[DB:cancelEventById] 당일 전체 취소 진행: userId=${userId}`);
       this._run(`
-        UPDATE events 
-        SET event_type = 'cancel' 
-        WHERE user_id = ? 
-          AND event_type = 'check_in' 
+        UPDATE events
+        SET event_type = 'cancel'
+        WHERE user_id = ?
+          AND event_type = 'check_in'
           AND DATE(created_at) = DATE('now','localtime')
       `, [userId]);
 
