@@ -481,6 +481,8 @@ function setupAutoUpdater() {
       cancelId: 1,
     }).then(({ response }) => {
       if (response === 0) {
+        stopCardReader();
+        if (db) db.close();
         autoUpdater.quitAndInstall();
       }
     });
