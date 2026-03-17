@@ -2274,7 +2274,11 @@ class DashboardPage {
     }
   }
 
-  _downloadCSV() {
+  async _downloadCSV() {
+    if (this._mode === 'monthly') {
+      await this._downloadMonthlyDetailCSV();
+      return;
+    }
     if (!this._lastRows || this._lastRows.length === 0) return;
     const BOM = '\uFEFF';
     const header = '번호,이름,총 이용,일반식,죽식';
@@ -2284,6 +2288,58 @@ class DashboardPage {
     const a = document.createElement('a');
     a.href = url;
     a.download = `이용현황_${this._label}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async _downloadMonthlyDetailCSV() {
+    const yearMonth = document.getElementById('dashPicker')?.value;
+    if (!yearMonth) return;
+    const [y, m] = yearMonth.split('-');
+
+    // 평일(월~금) 날짜 목록 계산
+    const lastDay = new Date(+y, +m, 0).getDate();
+    const weekdays = [];
+    for (let d = 1; d <= lastDay; d++) {
+      const dow = new Date(+y, +m - 1, d).getDay();
+      if (dow >= 1 && dow <= 5) weekdays.push(String(d).padStart(2, '0'));
+    }
+    if (weekdays.length === 0) return;
+
+    // 데이터 조회
+    const [detailRows, activeUsers] = await Promise.all([
+      window.api.getMonthlyDetailStats(yearMonth),
+      window.api.searchUsers('', 'active')
+    ]);
+
+    // 이벤트 데이터를 Map<user_id, Map<date_dd, cellValue>>로 그룹핑
+    const userDateMap = new Map();
+    for (const row of detailRows) {
+      if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+      const dd = row.event_date.slice(8, 10); // "YYYY-MM-DD" → "DD"
+      const method = row.input_method === 'card' ? '카드' : '수동';
+      const cell = `${row.final_menu}(${method})`;
+      userDateMap.get(row.user_id).set(dd, cell);
+    }
+
+    // CSV 생성
+    const BOM = '\uFEFF';
+    const header = ['번호', '이름', ...weekdays.map(d => `${parseInt(d)}일`)].join(',');
+    const sortedUsers = [...activeUsers].sort((a, b) => {
+      const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+      return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+    });
+    const body = sortedUsers.map(u => {
+      const dateMap = userDateMap.get(u.id) || new Map();
+      const cells = weekdays.map(d => dateMap.get(d) || 'X');
+      return [u.number, u.name, ...cells].join(',');
+    }).join('\n');
+
+    const blob = new Blob([BOM + header + '\n' + body], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `이용현황_상세_${this._label}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }

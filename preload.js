@@ -72,6 +72,7 @@ contextBridge.exposeInMainWorld('api', {
   // --- 통계 ---
   getUserStatistics: () => ipcRenderer.invoke('db:getUserStatistics'),
   getMonthlyStats: (ym) => ipcRenderer.invoke('db:getMonthlyStats', ym),
+  getMonthlyDetailStats: (ym) => ipcRenderer.invoke('db:getMonthlyDetailStats', ym),
   getPeriodStats: (s, e) => ipcRenderer.invoke('db:getPeriodStats', s, e),
   getDailyRangeStats: (s, e) => ipcRenderer.invoke('db:getDailyRangeStats', s, e),
   getAllUsersWeekdayUsage: (s, e) => ipcRenderer.invoke('db:getAllUsersWeekdayUsage', s, e),
