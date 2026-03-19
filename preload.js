@@ -83,6 +83,10 @@ contextBridge.exposeInMainWorld('api', {
   setSetting: (k, v) => ipcRenderer.invoke('settings:set', k, v),
   getAllSettings: () => ipcRenderer.invoke('settings:getAll'),
 
+  // --- 메일 ---
+  sendMail: (opts) => ipcRenderer.invoke('mail:send', opts),
+  testMail: () => ipcRenderer.invoke('mail:test'),
+
   // --- 다이얼로그 ---
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
   showError: (t, m) => ipcRenderer.invoke('dialog:showError', t, m),

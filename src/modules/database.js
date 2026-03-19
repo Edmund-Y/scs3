@@ -253,6 +253,12 @@ class DatabaseManager {
       // 데이터/내보내기
       ['export_include_ticket', '1', 'export', '내보내기에 식권 포함'],
       ['export_encoding', 'UTF-8', 'export', 'CSV 인코딩'],
+      // SMTP 메일
+      ['smtp_host', '', 'export', 'SMTP 호스트'],
+      ['smtp_port', '587', 'export', 'SMTP 포트'],
+      ['smtp_user', '', 'export', 'SMTP 사용자'],
+      ['smtp_pass', '', 'export', 'SMTP 비밀번호'],
+      ['smtp_default_to', '', 'export', '기본 수신자 이메일'],
     ];
 
     for (const [key, value, category, desc] of defaults) {

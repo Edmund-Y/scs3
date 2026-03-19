@@ -3,7 +3,7 @@
  * Electron 메인 프로세스
  */
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -212,6 +212,14 @@ async function initializeApp() {
       // 5. 설정 관리자 (DB 기반)
       settings = new SettingsManager(db, logger);
 
+      // 기존 평문 SMTP 비밀번호 암호화 마이그레이션
+      for (const ek of ENCRYPTED_KEYS) {
+        const raw = settings.get(ek, '');
+        if (raw && typeof raw === 'string' && !raw.startsWith(ENC_PREFIX)) {
+          settings.set(ek, encryptValue(raw));
+        }
+      }
+
       // 6. 카드 리더기 시작
       const comPort = settings.get('com_port', 'COM3');
       const baudRate = settings.get('baud_rate', '9600');
@@ -346,14 +354,43 @@ ipcMain.handle('db:getAllUsersWeekdayUsage', (_, startDate, endDate) => {
 ipcMain.handle('db:getDeletedUsers', (_, search) => db.getDeletedUsers(search));
 
 // --- 설정 ---
+const ENCRYPTED_KEYS = ['smtp_pass'];
+const ENC_PREFIX = 'enc:';
+
+function encryptValue(plain) {
+  if (!plain || !safeStorage.isEncryptionAvailable()) return plain;
+  const buf = safeStorage.encryptString(String(plain));
+  return ENC_PREFIX + buf.toString('base64');
+}
+
+function decryptValue(stored) {
+  if (!stored || typeof stored !== 'string' || !stored.startsWith(ENC_PREFIX)) return stored;
+  try {
+    const buf = Buffer.from(stored.slice(ENC_PREFIX.length), 'base64');
+    return safeStorage.decryptString(buf);
+  } catch {
+    return stored;
+  }
+}
+
 ipcMain.handle('settings:get', (_, key, defaultValue) => {
-  return settings ? settings.get(key, defaultValue) : defaultValue;
+  if (!settings) return defaultValue;
+  const val = settings.get(key, defaultValue);
+  if (ENCRYPTED_KEYS.includes(key)) return decryptValue(val);
+  return val;
 });
 ipcMain.handle('settings:set', (_, key, value) => {
-  return settings ? settings.set(key, value) : false;
+  if (!settings) return false;
+  if (ENCRYPTED_KEYS.includes(key) && value) return settings.set(key, encryptValue(value));
+  return settings.set(key, value);
 });
 ipcMain.handle('settings:getAll', () => {
-  return settings ? settings.getAll() : {};
+  if (!settings) return {};
+  const all = settings.getAll();
+  for (const key of ENCRYPTED_KEYS) {
+    if (all[key]) all[key] = decryptValue(all[key]);
+  }
+  return all;
 });
 
 // --- 다이얼로그 ---
@@ -398,6 +435,70 @@ ipcMain.handle('setup:createDatabase', async (_, basePath) => {
   } catch (err) {
     logger.error(`데이터베이스 생성 실패: ${err.message}`);
     return { success: false, error: err.message };
+  }
+});
+
+// ==================== 메일 발송 IPC ====================
+
+ipcMain.handle('mail:send', async (_, opts) => {
+  try {
+    const nodemailer = require('nodemailer');
+    const host = settings.get('smtp_host', '');
+    const port = parseInt(settings.get('smtp_port', '587'), 10);
+    const user = settings.get('smtp_user', '');
+    const pass = decryptValue(settings.get('smtp_pass', ''));
+
+    if (!host || !user || !pass) {
+      return { success: false, message: 'SMTP 설정이 완료되지 않았습니다. 설정 페이지에서 SMTP 정보를 입력하세요.' };
+    }
+
+    const transporter = nodemailer.createTransport({
+      host, port, secure: port === 465,
+      auth: { user, pass },
+    });
+
+    const mailOptions = {
+      from: user,
+      to: opts.to,
+      subject: opts.subject || '이용현황',
+      text: opts.body || '',
+      attachments: opts.csvContent ? [{
+        filename: opts.csvFilename || 'data.csv',
+        content: Buffer.from(opts.csvContent, 'utf-8'),
+        contentType: 'text/csv',
+      }] : [],
+    };
+
+    await transporter.sendMail(mailOptions);
+    logger.info(`메일 발송 성공: ${opts.to}`);
+    return { success: true };
+  } catch (err) {
+    logger.error(`메일 발송 실패: ${err.message}`);
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('mail:test', async () => {
+  try {
+    const nodemailer = require('nodemailer');
+    const host = settings.get('smtp_host', '');
+    const port = parseInt(settings.get('smtp_port', '587'), 10);
+    const user = settings.get('smtp_user', '');
+    const pass = decryptValue(settings.get('smtp_pass', ''));
+
+    if (!host || !user || !pass) {
+      return { success: false, message: 'SMTP 설정이 완료되지 않았습니다.' };
+    }
+
+    const transporter = nodemailer.createTransport({
+      host, port, secure: port === 465,
+      auth: { user, pass },
+    });
+
+    await transporter.verify();
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: err.message };
   }
 });
 
