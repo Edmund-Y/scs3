@@ -3,18 +3,6 @@
  * pages/main_window.py 이식
  */
 
-// XSS 이스케이프 유틸리티
-function _escapeHtml(str) {
-  if (!str) return str;
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
-}
-function _escapeAttr(str) {
-  if (!str) return str;
-  return _escapeHtml(str).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
 // 페이지 모듈 (lazy import)
 const pages = {};
 
@@ -633,13 +621,13 @@ class CountPage {
       `;
     }
 
-    const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${_escapeHtml(event.special_remarks)}</div>` : '';
+    const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${event.special_remarks}</div>` : '';
     if (remarksRow) cls += ' has-remarks';
 
     const html = `
       <div class="${cls}">
         <span class="time">${time}</span>
-        <span class="name">${isTicket ? '🎫 식권' : `${_escapeHtml(event.number) || ''} ${_escapeHtml(event.name) || ''}`}</span>
+        <span class="name">${isTicket ? '🎫 식권' : `${event.number || ''} ${event.name || ''}`}</span>
         <div class="badge-col">${badge}</div>
         <div class="actions">
           ${actions}
@@ -718,8 +706,8 @@ class CountPage {
         `;
       }
 
-      const nameDisplay = isTicket ? '🎫 식권' : (showNumber ? `${_escapeHtml(event.number) || ''} ${_escapeHtml(event.name) || ''}` : `${_escapeHtml(event.name) || ''}`);
-      const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${_escapeHtml(event.special_remarks)}</div>` : '';
+      const nameDisplay = isTicket ? '🎫 식권' : (showNumber ? `${event.number || ''} ${event.name || ''}` : `${event.name || ''}`);
+      const remarksRow = (!isTicket && event.special_remarks) ? `<div class="usage-card-remarks">⚠ ${event.special_remarks}</div>` : '';
       if (remarksRow) cls += ' has-remarks';
 
       return `
@@ -804,9 +792,9 @@ class CountPage {
     container.innerHTML = `
       <p style="color: var(--text-muted); font-size: 11px; padding: 6px 10px 4px; letter-spacing: 0.3px;">활성 사용자 ${users.length}명</p>
     ` + users.map(u => `
-      <div class="search-result-item" data-number="${_escapeAttr(u.number)}">
-        <span class="number">${_escapeHtml(u.number)}</span>
-        <span class="name">${_escapeHtml(u.name)}</span>
+      <div class="search-result-item" data-number="${u.number}">
+        <span class="number">${u.number}</span>
+        <span class="name">${u.name}</span>
       </div>
     `).join('');
 
@@ -1081,11 +1069,11 @@ class EditPage {
 
         return `
           <tr>
-            <td style="font-weight: 700; color: var(--accent-cyan);">${_escapeHtml(u.number)}</td>
-            <td>${_escapeHtml(u.name)}</td>
-            <td style="font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);">${_escapeHtml(u.card_number) || '—'}</td>
+            <td style="font-weight: 700; color: var(--accent-cyan);">${u.number}</td>
+            <td>${u.name}</td>
+            <td style="font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary);">${u.card_number || '—'}</td>
             <td>${statusBadge}</td>
-            <td style="color: var(--text-muted); font-size: 12px;">${_escapeHtml(u.notes) || ''}</td>
+            <td style="color: var(--text-muted); font-size: 12px;">${u.notes || ''}</td>
             <td>
               <div style="display: flex; gap: 4px;">
                 <button class="btn-icon" title="수정" data-action="edit" data-id="${u.id}">✏️</button>
@@ -1151,7 +1139,7 @@ class EditPage {
           <div style="font-family: var(--font-mono); font-size: 16px; font-weight: 700; color: var(--accent-cyan);">${cardNumber}</div>
           ${owner ? `
             <div style="margin-top: 8px; font-size: 12px; color: var(--warning);">
-              현재 소유자: ${_escapeHtml(owner.number)} ${_escapeHtml(owner.name)}${owner.status === 'suspended' ? ' (일시정지)' : ''}
+              현재 소유자: ${owner.number} ${owner.name}${owner.status === 'suspended' ? ' (일시정지)' : ''}
             </div>` : `
             <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">등록되지 않은 카드</div>`}
         </div>
@@ -1220,11 +1208,11 @@ class EditPage {
           resultsEl.innerHTML = users.map(u => `
             <div class="assign-user-row" data-id="${u.id}" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--divider);">
               <div>
-                <span style="font-weight: 700; color: var(--accent-cyan);">${_escapeHtml(u.number)}</span>
-                <span style="margin-left: 8px;">${_escapeHtml(u.name)}</span>
+                <span style="font-weight: 700; color: var(--accent-cyan);">${u.number}</span>
+                <span style="margin-left: 8px;">${u.name}</span>
                 <span class="badge ${u.status === 'active' ? 'badge-active' : u.status === 'suspended' ? 'badge-suspended' : 'badge-terminated'}" style="margin-left: 8px; font-size: 10px;">${u.status === 'active' ? '활성' : u.status === 'suspended' ? '정지' : '종결'}</span>
               </div>
-              <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">${_escapeHtml(u.card_number) || '카드없음'}</div>
+              <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">${u.card_number || '카드없음'}</div>
             </div>
           `).join('');
 
@@ -1259,7 +1247,8 @@ class EditPage {
       }, 300);
     });
 
-    overlay.querySelector('#assignCancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#assignCancel').addEventListener('click', () => overlay.remove());
+
 
     searchInput.focus();
   }
@@ -1312,7 +1301,8 @@ class EditPage {
       addCardEl.focus();
     });
 
-    overlay.querySelector('#addCancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#addCancel').addEventListener('click', () => overlay.remove());
+
 
     overlay.querySelector('#addConfirm').addEventListener('click', async () => {
       const number = addNumberEl.value.trim();
@@ -1382,8 +1372,8 @@ class EditPage {
     overlay.className = 'modal-overlay';
     overlay.innerHTML = `
       <div class="modal" style="min-width: 480px;">
-        <h3>사용자 수정 — ${_escapeHtml(user.number)}</h3>
-        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">${_escapeHtml(user.name)} (#${_escapeHtml(user.number)})</p>
+        <h3>사용자 수정 — ${user.number}</h3>
+        <p style="color: var(--text-secondary); font-size: 13px; margin-bottom: 16px;">${user.name} (#${user.number})</p>
         <div style="display: flex; flex-direction: column; gap: 16px;">
           <!-- 기본 정보 -->
           <div style="border-bottom: 1px solid var(--divider); padding-bottom: 16px;">
@@ -1391,11 +1381,11 @@ class EditPage {
             <div style="display: flex; flex-direction: column; gap: 10px;">
               <div>
                 <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">이름 *</label>
-                <input class="input" id="editName" value="${_escapeAttr(user.name) || ''}" />
+                <input class="input" id="editName" value="${user.name || ''}" />
               </div>
               <div>
                 <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">비고</label>
-                <input class="input" id="editNotes" value="${_escapeAttr(user.notes) || ''}" />
+                <input class="input" id="editNotes" value="${user.notes || ''}" />
               </div>
             </div>
           </div>
@@ -1488,7 +1478,8 @@ class EditPage {
       });
     }
 
-    overlay.querySelector('#editCancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#editCancel').addEventListener('click', () => overlay.remove());
+
 
     overlay.querySelector('#editConfirm').addEventListener('click', async () => {
       const name = document.getElementById('editName').value.trim();
@@ -1702,12 +1693,12 @@ class SpecialRemarksPage {
                 ${r.is_active ? '● 활성' : '○ 비활성'}
               </span>
             </div>
-            <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">${_escapeHtml(r.name)}</div>
+            <div style="font-size: 15px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px;">${r.name}</div>
             <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5; min-height: 18px;">
-              ${r.description ? _escapeHtml(r.description) : '<span style="opacity:0.5;">설명 없음</span>'}
+              ${r.description || '<span style="opacity:0.5;">설명 없음</span>'}
             </div>
             ${r.start_date || r.end_date ? `<div style="font-size: 11px; color: var(--text-dim); margin-top: 8px; display: flex; align-items: center; gap: 4px;">
-              <span>📅</span><span>${_escapeHtml(r.start_date) || '?'} ~ ${_escapeHtml(r.end_date) || '?'}</span>
+              <span>📅</span><span>${r.start_date || '?'} ~ ${r.end_date || '?'}</span>
             </div>` : ''}
           </div>
           <div style="padding: 10px 18px; background: var(--bg-medium);
@@ -1762,14 +1753,14 @@ class SpecialRemarksPage {
             <div style="width: 46px; height: 46px; border-radius: 12px; background: ${accentColor}18;
               display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0;">${icon}</div>
             <div style="flex: 1; min-width: 0;">
-              <input id="inlineRemarkName" value="${_escapeAttr(remark.name)}"
+              <input id="inlineRemarkName" value="${remark.name}"
                 style="background: transparent; border: none; border-bottom: 1px solid transparent;
                   color: var(--text-primary); font-size: 17px; font-weight: 700;
                   width: 100%; padding: 2px 4px; margin-bottom: 6px; outline: none; display: block;
                   transition: border-color 0.15s; border-radius: 0;"
                 onfocus="this.style.borderBottomColor='${accentColor}'"
                 onblur="this.style.borderBottomColor='transparent'" />
-              <input id="inlineRemarkDesc" value="${_escapeAttr(remark.description) || ''}" placeholder="설명 추가..."
+              <input id="inlineRemarkDesc" value="${remark.description || ''}" placeholder="설명 추가..."
                 style="background: transparent; border: none; border-bottom: 1px solid transparent;
                   color: var(--text-muted); font-size: 12px; width: 100%; padding: 2px 4px;
                   outline: none; display: block; transition: border-color 0.15s; border-radius: 0;"
@@ -1799,11 +1790,11 @@ class SpecialRemarksPage {
         <div style="padding: 10px 24px; border-bottom: 1px solid var(--divider); flex-shrink: 0;
           display: flex; align-items: center; gap: 12px; background: var(--bg-medium);">
           <span style="font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap;">📅 기간</span>
-          <input type="date" id="inlineRemarkStartDate" value="${_escapeAttr(remark.start_date) || ''}"
+          <input type="date" id="inlineRemarkStartDate" value="${remark.start_date || ''}"
             style="background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
               color: var(--text-primary); padding: 4px 8px; font-size: 12px; outline: none;" />
           <span style="font-size: 12px; color: var(--text-muted);">~</span>
-          <input type="date" id="inlineRemarkEndDate" value="${_escapeAttr(remark.end_date) || ''}"
+          <input type="date" id="inlineRemarkEndDate" value="${remark.end_date || ''}"
             style="background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
               color: var(--text-primary); padding: 4px 8px; font-size: 12px; outline: none;" />
           <button id="inlineClearDates" style="background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -1867,8 +1858,8 @@ class SpecialRemarksPage {
             padding: 8px 12px; margin: 2px 0; border-radius: var(--radius-sm);
             background: var(--bg-medium);">
             <div>
-              <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${_escapeHtml(u.number)}</span>
-              <span style="margin-left: 8px; font-size: 13px;">${_escapeHtml(u.name)}</span>
+              <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${u.number}</span>
+              <span style="margin-left: 8px; font-size: 13px;">${u.name}</span>
             </div>
             <button class="unassign-btn" data-uid="${u.user_id}"
               style="background: none; border: 1px solid var(--error); color: var(--error);
@@ -1907,8 +1898,8 @@ class SpecialRemarksPage {
           onmouseover="this.style.background='var(--card-hover)'"
           onmouseout="this.style.background='var(--bg-medium)'">
           <div>
-            <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${_escapeHtml(u.number)}</span>
-            <span style="margin-left: 8px; font-size: 13px;">${_escapeHtml(u.name)}</span>
+            <span style="font-family: var(--font-mono); font-size: 12px; color: var(--accent-cyan); font-weight: 700;">${u.number}</span>
+            <span style="margin-left: 8px; font-size: 13px;">${u.name}</span>
           </div>
           <button class="btn btn-primary btn-sm assign-btn" data-uid="${u.id}"
             style="font-size: 11px; padding: 3px 12px;">+ 배정</button>
@@ -2039,11 +2030,11 @@ class SpecialRemarksPage {
         <div style="display: flex; flex-direction: column; gap: 14px;">
           <div>
             <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">이름 *</label>
-            <input class="input" id="editRemarkName" value="${_escapeAttr(remark.name)}" />
+            <input class="input" id="editRemarkName" value="${remark.name}" />
           </div>
           <div>
             <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 5px;">설명</label>
-            <input class="input" id="editRemarkDesc" value="${_escapeAttr(remark.description) || ''}" placeholder="간단한 설명을 입력하세요" />
+            <input class="input" id="editRemarkDesc" value="${remark.description || ''}" placeholder="간단한 설명을 입력하세요" />
           </div>
           <div>
             <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 8px;">상태</label>
@@ -2130,7 +2121,8 @@ class SpecialRemarksPage {
     const nameInput = overlay.querySelector('#remarkName');
     nameInput.focus();
 
-    overlay.querySelector('#remarkCancel').addEventListener('click', () => overlay.remove());
+    overlay.querySelector('#remarkCancel').addEventListener('click', () => overlay.remove());
+
     overlay.querySelector('#remarkConfirm').addEventListener('click', async () => {
       const name = nameInput.value.trim();
       if (!name) { nameInput.focus(); return; }
@@ -2171,7 +2163,6 @@ class DashboardPage {
           </div>
           <div id="dashDateInput"></div>
           <button id="dashDownloadBtn" class="btn" style="padding: 6px 16px; margin-left: auto; background: var(--bg-medium); border: 1px solid var(--border); color: var(--text-secondary);">CSV 다운로드</button>
-          <button id="dashMailBtn" class="btn" style="padding: 6px 16px; background: var(--bg-medium); border: 1px solid var(--border); color: var(--text-secondary);">메일 보내기</button>
         </div>
         <div id="statsTableWrap" style="color: var(--text-muted);">로딩 중...</div>
       </div>
@@ -2183,7 +2174,6 @@ class DashboardPage {
     document.getElementById('modeMonthly').addEventListener('click', () => this._setMode('monthly'));
     document.getElementById('modeWeekly').addEventListener('click', () => this._setMode('weekly'));
     document.getElementById('dashDownloadBtn').addEventListener('click', () => this._downloadCSV());
-    document.getElementById('dashMailBtn').addEventListener('click', () => this._showMailModal());
     this._renderDateInput();
     await this._loadTable();
   }
@@ -2274,7 +2264,7 @@ class DashboardPage {
               <th style="width:60px">번호</th><th>이름</th><th style="width:100px">총 이용</th><th style="width:100px">일반식</th><th style="width:100px">죽식</th>
             </tr></thead>
             <tbody>
-              ${rows.map(r => `<tr><td>${_escapeHtml(r.number)}</td><td>${_escapeHtml(r.name)}</td><td style="text-align:center">${r.total_count}</td><td style="text-align:center">${r.normal_count}</td><td style="text-align:center">${r.porridge_count}</td></tr>`).join('')}
+              ${rows.map(r => `<tr><td>${r.number}</td><td>${r.name}</td><td style="text-align:center">${r.total_count}</td><td style="text-align:center">${r.normal_count}</td><td style="text-align:center">${r.porridge_count}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:600; border-top: 2px solid var(--border);">
               <td colspan="2" style="text-align:center">합계 (${rows.length}명)</td>
@@ -2300,65 +2290,6 @@ class DashboardPage {
     a.download = `이용현황_${this._label}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }
-
-  async _showMailModal() {
-    if (!this._lastRows || this._lastRows.length === 0) return;
-    const defaultTo = await window.api.getSetting('smtp_default_to', '');
-    const subject = `이용현황_${this._label}`;
-
-    // 모달 오버레이
-    const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:9999;';
-    overlay.innerHTML = `
-      <div style="background:var(--bg-medium);border:1px solid var(--border);border-radius:var(--radius-md);padding:24px;width:400px;max-width:90vw;">
-        <h3 style="margin:0 0 16px;">메일 보내기</h3>
-        <label style="display:block;margin-bottom:12px;">
-          <span style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:13px;">받는 사람</span>
-          <input id="mailTo" type="email" value="${defaultTo}" style="width:100%;padding:8px;background:var(--bg-dark);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);box-sizing:border-box;" />
-        </label>
-        <label style="display:block;margin-bottom:16px;">
-          <span style="display:block;margin-bottom:4px;color:var(--text-secondary);font-size:13px;">제목</span>
-          <input id="mailSubject" type="text" value="${subject}" style="width:100%;padding:8px;background:var(--bg-dark);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);box-sizing:border-box;" />
-        </label>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
-          <button id="mailCancel" class="btn" style="padding:8px 16px;background:var(--bg-dark);border:1px solid var(--border);color:var(--text-secondary);">취소</button>
-          <button id="mailSend" class="btn" style="padding:8px 16px;background:var(--accent-cyan);border:none;color:#000;font-weight:600;">보내기</button>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(overlay);
-
-    overlay.querySelector('#mailCancel').addEventListener('click', () => overlay.remove());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-
-    overlay.querySelector('#mailSend').addEventListener('click', async () => {
-      const to = overlay.querySelector('#mailTo').value.trim();
-      const subj = overlay.querySelector('#mailSubject').value.trim();
-      if (!to) { alert('받는 사람 이메일을 입력하세요.'); return; }
-
-      const sendBtn = overlay.querySelector('#mailSend');
-      sendBtn.disabled = true;
-      sendBtn.textContent = '발송 중...';
-
-      const header = '번호,이름,총 이용,일반식,죽식';
-      const body = this._lastRows.map(r => `${r.number},${r.name},${r.total_count},${r.normal_count},${r.porridge_count}`).join('\n');
-      const csvContent = '\uFEFF' + header + '\n' + body;
-
-      const result = await window.api.sendMail({
-        to, subject: subj, body: `${subj} 데이터를 첨부합니다.`,
-        csvContent, csvFilename: `${subj}.csv`,
-      });
-
-      if (result.success) {
-        alert('메일이 발송되었습니다.');
-        overlay.remove();
-      } else {
-        alert(`메일 발송 실패: ${result.message}`);
-        sendBtn.disabled = false;
-        sendBtn.textContent = '보내기';
-      }
-    });
   }
 
   cleanup() { }
@@ -2414,8 +2345,8 @@ class SettingsPage {
       },
       {
         id: 'export', icon: '📤', name: '내보내기', color: '#f59e0b',
-        desc: 'CSV 내보내기 및 메일 설정',
-        keys: ['export_include_ticket', 'export_encoding', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_default_to'],
+        desc: 'CSV 내보내기 옵션',
+        keys: ['export_include_ticket', 'export_encoding'],
       },
       {
         id: 'logging', icon: '📋', name: '로깅', color: '#6b7280',
@@ -2479,11 +2410,6 @@ class SettingsPage {
       max_backups:                 { label: '최대 백업 수',          desc: '오래된 백업 자동 삭제 기준', type: 'number', unit: '개' },
       export_include_ticket:       { label: '식권 포함',            desc: 'CSV 내보내기 시 식권 데이터 포함', type: 'bool' },
       export_encoding:             { label: 'CSV 인코딩',           desc: '내보내기 파일 문자 인코딩', type: 'select', options: [['UTF-8','UTF-8'],['EUC-KR','EUC-KR']] },
-      smtp_host:                   { label: 'SMTP 호스트',           desc: 'SMTP 서버 주소 (예: smtp.gmail.com)', type: 'text', placeholder: 'smtp.gmail.com' },
-      smtp_port:                   { label: 'SMTP 포트',             desc: 'SMTP 서버 포트 (587: TLS, 465: SSL)', type: 'number' },
-      smtp_user:                   { label: 'SMTP 사용자',           desc: '이메일 계정 (발신자)', type: 'text', placeholder: 'user@example.com' },
-      smtp_pass:                   { label: 'SMTP 비밀번호',         desc: '이메일 계정 비밀번호 또는 앱 비밀번호', type: 'password' },
-      smtp_default_to:             { label: '기본 수신자',           desc: '메일 보내기 시 기본 수신 이메일', type: 'text', placeholder: 'recipient@example.com' },
       log_level:                   { label: '로그 레벨',            desc: '기록할 로그의 최소 심각도', type: 'select', options: [['DEBUG','DEBUG'],['INFO','INFO'],['WARNING','WARNING'],['ERROR','ERROR']] },
       log_retention_days:          { label: '로그 보관 기간',        desc: '오래된 로그 자동 삭제 기준', type: 'number', unit: '일' },
     };
@@ -2596,69 +2522,10 @@ class SettingsPage {
         <div class="s-panel-body">
           ${this._renderSettingRows(group.keys, meta)}
         </div>
-        ${groupId === 'export' ? `
-        <div style="padding: 0 24px 24px;">
-          <details style="background: var(--bg-dark); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 16px;">
-            <summary style="cursor: pointer; font-weight: 600; color: var(--text-primary); font-size: 14px; user-select: none;">SMTP 설정 가이드</summary>
-            <div style="margin-top: 12px; font-size: 13px; color: var(--text-secondary); line-height: 1.7;">
-              <details style="margin-bottom: 12px;">
-                <summary style="cursor: pointer; font-weight: 600; color: #00d4ff;">네이버 메일 설정</summary>
-                <ol style="margin: 8px 0 0 20px; padding: 0;">
-                  <li>네이버 메일 → 환경설정 → POP3/IMAP 설정</li>
-                  <li>IMAP/SMTP 사용을 <b>사용함</b>으로 변경 후 저장</li>
-                  <li>SMTP 호스트: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">smtp.naver.com</code></li>
-                  <li>SMTP 포트: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">587</code></li>
-                  <li>SMTP 사용자: 네이버 아이디 (예: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">myid@naver.com</code>)</li>
-                  <li>SMTP 비밀번호: 네이버 로그인 비밀번호</li>
-                </ol>
-              </details>
-              <details>
-                <summary style="cursor: pointer; font-weight: 600; color: #00d4ff;">구글 (Gmail) 설정</summary>
-                <ol style="margin: 8px 0 0 20px; padding: 0;">
-                  <li>Google 계정 → 보안 → 2단계 인증 활성화</li>
-                  <li>Google 계정 → 보안 → 앱 비밀번호 생성 (메일 용도 선택)</li>
-                  <li>SMTP 호스트: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">smtp.gmail.com</code></li>
-                  <li>SMTP 포트: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">587</code></li>
-                  <li>SMTP 사용자: Gmail 주소 (예: <code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">myid@gmail.com</code>)</li>
-                  <li>SMTP 비밀번호: 위에서 생성한 <b>앱 비밀번호</b> (16자리)</li>
-                </ol>
-              </details>
-            </div>
-          </details>
-        </div>
-        <div style="padding: 0 24px 24px; display:flex; align-items:center; gap:12px;">
-          <button id="smtpTestBtn" class="btn" style="padding:8px 18px; font-size:13px; font-weight:600; border-radius:var(--radius-sm); cursor:pointer;">SMTP 연결 테스트</button>
-          <span id="smtpTestResult" style="font-size:13px;"></span>
-        </div>
-        ` : ''}
       </div>
     `;
 
     this._bindHandlers(content);
-
-    if (groupId === 'export') {
-      const btn = document.getElementById('smtpTestBtn');
-      const result = document.getElementById('smtpTestResult');
-      if (btn) {
-        btn.addEventListener('click', async () => {
-          btn.disabled = true;
-          btn.textContent = '테스트 중...';
-          result.textContent = '';
-          result.style.color = '';
-          try {
-            const res = await window.api.testMail();
-            result.textContent = res?.success ? '연결 성공' : `실패: ${res?.error || '알 수 없는 오류'}`;
-            result.style.color = res?.success ? '#00c853' : '#ff5252';
-          } catch (e) {
-            result.textContent = `오류: ${e.message}`;
-            result.style.color = '#ff5252';
-          } finally {
-            btn.disabled = false;
-            btn.textContent = 'SMTP 연결 테스트';
-          }
-        });
-      }
-    }
   }
 
   _renderSearchResults() {
@@ -2760,10 +2627,6 @@ class SettingsPage {
           ${m.unit ? `<span class="s-unit">${m.unit}</span>` : ''}
         </div>
       `;
-    }
-    // password
-    if (m.type === 'password') {
-      return `<input type="password" class="s-input-text" data-key="${key}" value="${value ?? ''}" placeholder="${m.placeholder || ''}" />`;
     }
     // text
     return `<input type="text" class="s-input-text" data-key="${key}" value="${value ?? ''}" placeholder="${m.placeholder || ''}" />`;
@@ -3075,12 +2938,18 @@ class WebConsole {
       `<span class="log-time">${entry.timestamp.slice(11)}</span>` +
       `<span class="log-level">${entry.level}</span>` +
       `<span class="log-source">[${entry.source}]</span>` +
-      `<span class="log-msg">${_escapeHtml(entry.message)}</span>`;
+      `<span class="log-msg">${this._escapeHtml(entry.message)}</span>`;
     this._body.appendChild(div);
 
     // 자동 스크롤
     this._body.scrollTop = this._body.scrollHeight;
     this._isLogging = false;
+  }
+
+  _escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
   }
 
   _rerender() {

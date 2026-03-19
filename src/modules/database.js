@@ -931,6 +931,34 @@ class DatabaseManager {
     `, [yearMonth]);
   }
 
+  getMonthlyDetailStats(yearMonth) {
+    return this._queryAll(`
+      WITH daily_user_menu AS (
+        SELECT user_id, DATE(created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(
+              MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END),
+              MAX(CASE WHEN event_type = 'check_in' THEN menu_type END)
+            )
+          END as final_menu,
+          (SELECT input_method FROM events e2
+           WHERE e2.user_id = e.user_id AND DATE(e2.created_at) = DATE(e.created_at)
+           AND e2.event_type = 'check_in' AND e2.input_method != 'ticket'
+           ORDER BY e2.created_at ASC LIMIT 1) as input_method
+        FROM events e
+        WHERE strftime('%Y-%m', created_at) = ?
+          AND input_method != 'ticket'
+        GROUP BY user_id, DATE(created_at)
+      )
+      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, d.input_method
+      FROM daily_user_menu d
+      JOIN users u ON d.user_id = u.id
+      WHERE u.deleted_at IS NULL AND d.final_menu IS NOT NULL
+      ORDER BY CAST(u.number AS INTEGER), u.number, d.event_date
+    `, [yearMonth]);
+  }
+
   getPeriodStats(startDate, endDate) {
     return this._queryAll(`
       WITH daily_user_menu AS (

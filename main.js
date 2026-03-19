@@ -340,6 +340,7 @@ ipcMain.handle('db:unassignRemark', (_, userId, remarkId) => db.unassignRemark(u
 // 통계
 ipcMain.handle('db:getUserStatistics', () => db.getUserStatistics());
 ipcMain.handle('db:getMonthlyStats', (_, yearMonth) => db.getMonthlyStats(yearMonth));
+ipcMain.handle('db:getMonthlyDetailStats', (_, yearMonth) => db.getMonthlyDetailStats(yearMonth));
 ipcMain.handle('db:getPeriodStats', (_, startDate, endDate) => {
   return db.getPeriodStats(startDate, endDate);
 });
