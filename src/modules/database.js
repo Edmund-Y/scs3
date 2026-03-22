@@ -254,11 +254,10 @@ class DatabaseManager {
       ['export_include_ticket', '1', 'export', '내보내기에 식권 포함'],
       ['export_encoding', 'UTF-8', 'export', 'CSV 인코딩'],
       // SMTP 메일
-      ['smtp_host', '', 'export', 'SMTP 호스트'],
-      ['smtp_port', '587', 'export', 'SMTP 포트'],
-      ['smtp_user', '', 'export', 'SMTP 사용자'],
-      ['smtp_pass', '', 'export', 'SMTP 비밀번호'],
-      ['smtp_default_to', '', 'export', '기본 수신자 이메일'],
+      ['smtp_provider', 'gmail', 'email', '메일 서비스 (gmail/naver/daum)'],
+      ['smtp_user', '', 'email', 'SMTP 사용자'],
+      ['smtp_pass', '', 'email', 'SMTP 비밀번호'],
+      ['smtp_default_to', '', 'email', '기본 수신자 이메일'],
     ];
 
     for (const [key, value, category, desc] of defaults) {
@@ -959,6 +958,34 @@ class DatabaseManager {
     `, [yearMonth]);
   }
 
+  getPeriodDetailStats(startDate, endDate) {
+    return this._queryAll(`
+      WITH daily_user_menu AS (
+        SELECT user_id, DATE(created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(
+              MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END),
+              MAX(CASE WHEN event_type = 'check_in' THEN menu_type END)
+            )
+          END as final_menu,
+          (SELECT input_method FROM events e2
+           WHERE e2.user_id = e.user_id AND DATE(e2.created_at) = DATE(e.created_at)
+           AND e2.event_type = 'check_in' AND e2.input_method != 'ticket'
+           ORDER BY e2.created_at ASC LIMIT 1) as input_method
+        FROM events e
+        WHERE DATE(created_at) BETWEEN ? AND ?
+          AND input_method != 'ticket'
+        GROUP BY user_id, DATE(created_at)
+      )
+      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, d.input_method
+      FROM daily_user_menu d
+      JOIN users u ON d.user_id = u.id
+      WHERE u.deleted_at IS NULL AND d.final_menu IS NOT NULL
+      ORDER BY CAST(u.number AS INTEGER), u.number, d.event_date
+    `, [startDate, endDate]);
+  }
+
   getPeriodStats(startDate, endDate) {
     return this._queryAll(`
       WITH daily_user_menu AS (
@@ -997,6 +1024,16 @@ class DatabaseManager {
         SUM(CASE WHEN final_menu = '죽식' THEN 1 ELSE 0 END) as porridge
       FROM daily_user_menu WHERE final_menu IS NOT NULL
       GROUP BY event_date ORDER BY event_date
+    `, [startDate, endDate]);
+  }
+
+  getOperatingDays(startDate, endDate) {
+    return this._queryAll(`
+      SELECT DISTINCT DATE(created_at) as op_date
+      FROM events
+      WHERE event_type = 'check_in'
+        AND DATE(created_at) BETWEEN ? AND ?
+      ORDER BY op_date
     `, [startDate, endDate]);
   }
 

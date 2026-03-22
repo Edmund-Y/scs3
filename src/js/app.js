@@ -14,6 +14,7 @@ class App {
 
     this._initSidebar();
     this._initClock();
+    this._initCloseHandler();
     this._checkFirstRun();
   }
 
@@ -83,6 +84,7 @@ class App {
       'edit': '사용자 관리',
       'special-remarks': '특이사항',
       'dashboard': '통계',
+      'help': '도움말',
       'settings': '설정',
       'setup-wizard': '초기 설정'
     };
@@ -113,6 +115,7 @@ class App {
       case 'edit': return new EditPage();
       case 'special-remarks': return new SpecialRemarksPage();
       case 'dashboard': return new DashboardPage();
+      case 'help': return new HelpPage();
       case 'settings': return new SettingsPage();
       case 'setup-wizard': return new SetupWizardPage(this);
       default: return new PlaceholderPage(pageName);
@@ -121,6 +124,166 @@ class App {
 
   _updateStatus(text) {
     document.getElementById('footerStatus').textContent = text;
+  }
+
+  /* ---- Close handler ---- */
+  _initCloseHandler() {
+    if (window.api && window.api.onCloseRequested) {
+      window.api.onCloseRequested(() => this._showCloseModal());
+    }
+  }
+
+  _showCloseModal() {
+    const overlay = document.createElement('div');
+    overlay.className = 'custom-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="custom-dialog" style="border-top: 3px solid var(--accent-cyan); max-width: 420px;">
+        <div class="custom-dialog-header">
+          <span class="custom-dialog-icon">🚪</span>
+          <h4 class="custom-dialog-title">프로그램 종료</h4>
+        </div>
+        <div class="custom-dialog-body">
+          <p class="custom-dialog-message">프로그램을 종료하시겠습니까?</p>
+        </div>
+        <div class="custom-dialog-actions" style="display:flex;gap:8px;">
+          <button class="btn btn-ghost" id="closeCancel">취소</button>
+          <button class="btn" id="closeMailQuit" style="background:var(--accent-cyan);color:#000;">메일 보내고 종료</button>
+          <button class="btn btn-primary" id="closeQuit">종료</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const cleanup = () => overlay.remove();
+
+    overlay.querySelector('#closeCancel').onclick = () => {
+      cleanup();
+    };
+
+    overlay.querySelector('#closeQuit').onclick = () => {
+      cleanup();
+      window.api.confirmClose('quit');
+    };
+
+    overlay.querySelector('#closeMailQuit').onclick = async () => {
+      cleanup();
+      await this._sendTodayMailAndQuit();
+    };
+  }
+
+  async _sendTodayMailAndQuit() {
+    const defaultTo = await window.api.getSetting('smtp_default_to', '');
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    const dateLabel = `${y}년 ${m}월 ${d}일`;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'custom-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="custom-dialog" style="border-top: 3px solid var(--accent-cyan); max-width: 500px;">
+        <div class="custom-dialog-header">
+          <span class="custom-dialog-icon">📧</span>
+          <h4 class="custom-dialog-title">이메일 발송 후 종료</h4>
+        </div>
+        <div class="custom-dialog-body" style="display:flex;flex-direction:column;gap:12px;">
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">수신자</label>
+            <input type="text" id="closeEmailTo" class="s-input-text" value="${defaultTo}" placeholder="recipient@example.com" style="width:100%;" />
+          </div>
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">제목</label>
+            <input type="text" id="closeEmailSubject" class="s-input-text" value="이용현황 - ${dateLabel}" style="width:100%;" />
+          </div>
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">본문 (선택)</label>
+            <textarea id="closeEmailBody" class="s-input-text" rows="3" style="width:100%;resize:vertical;" placeholder="추가 메시지를 입력하세요..."></textarea>
+          </div>
+          <div id="closeEmailError" style="color:var(--error);font-size:13px;display:none;"></div>
+        </div>
+        <div class="custom-dialog-actions">
+          <button class="btn btn-ghost" id="closeEmailCancel">취소</button>
+          <button class="btn btn-primary" id="closeEmailSend">발송 후 종료</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#closeEmailCancel').onclick = () => overlay.remove();
+
+    overlay.querySelector('#closeEmailSend').onclick = async () => {
+      const to = overlay.querySelector('#closeEmailTo').value.trim();
+      const subject = overlay.querySelector('#closeEmailSubject').value.trim();
+      const body = overlay.querySelector('#closeEmailBody').value.trim();
+      const errorEl = overlay.querySelector('#closeEmailError');
+
+      if (!to) {
+        errorEl.textContent = '수신자 이메일을 입력하세요.';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      const sendBtn = overlay.querySelector('#closeEmailSend');
+      sendBtn.disabled = true;
+      sendBtn.textContent = '발송 중...';
+      errorEl.style.display = 'none';
+
+      try {
+        // 오늘의 이용 현황 데이터 가져오기
+        const events = await window.api.getTodayEvents();
+        const attachment = this._buildTodayAttachment(events);
+
+        const res = await window.api.sendMail({
+          to,
+          subject,
+          body,
+          attachment,
+          attachmentFilename: `이용현황_${y}${m}${d}`,
+        });
+
+        if (res.success) {
+          overlay.remove();
+          window.api.confirmClose('quit');
+        } else {
+          errorEl.textContent = `발송 실패: ${res.message}`;
+          errorEl.style.display = 'block';
+          sendBtn.disabled = false;
+          sendBtn.textContent = '발송 후 종료';
+        }
+      } catch (e) {
+        errorEl.textContent = `오류: ${e.message}`;
+        errorEl.style.display = 'block';
+        sendBtn.disabled = false;
+        sendBtn.textContent = '발송 후 종료';
+      }
+    };
+  }
+
+  _buildTodayAttachment(events) {
+    const header = ['번호', '이름', '메뉴', '입력방식', '시간'];
+    const aoa = [header];
+    for (const ev of (events || [])) {
+      aoa.push([
+        ev.number || '',
+        ev.name || '',
+        ev.final_menu || ev.menu_type || '',
+        ev.input_method || '',
+        ev.created_at || '',
+      ]);
+    }
+    if (typeof XLSX !== 'undefined') {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [{ wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws, '이용현황');
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+    }
+    const BOM = '\uFEFF';
+    return { data: BOM + aoa.map(row => row.join(',')).join('\n'), type: 'csv' };
   }
 
   showToast(message, type = 'success', duration = 3000) {
@@ -2162,7 +2325,8 @@ class DashboardPage {
             <button id="modeWeekly" style="padding: 5px 14px; font-size: 13px; border: none; background: var(--bg-medium); color: var(--text-secondary); cursor: pointer;">주간</button>
           </div>
           <div id="dashDateInput"></div>
-          <button id="dashDownloadBtn" class="btn" style="padding: 6px 16px; margin-left: auto; background: var(--bg-medium); border: 1px solid var(--border); color: var(--text-secondary);">CSV 다운로드</button>
+          <button id="dashDownloadBtn" class="btn" style="padding: 6px 16px; margin-left: auto; background: var(--bg-medium); border: 1px solid var(--border); color: var(--text-secondary);">XLSX 다운로드</button>
+          <button id="dashEmailBtn" class="btn" style="padding: 6px 16px; background: var(--accent-cyan); color: #000; border: none;">📧 이메일 발송</button>
         </div>
         <div id="statsTableWrap" style="color: var(--text-muted);">로딩 중...</div>
       </div>
@@ -2174,6 +2338,7 @@ class DashboardPage {
     document.getElementById('modeMonthly').addEventListener('click', () => this._setMode('monthly'));
     document.getElementById('modeWeekly').addEventListener('click', () => this._setMode('weekly'));
     document.getElementById('dashDownloadBtn').addEventListener('click', () => this._downloadCSV());
+    document.getElementById('dashEmailBtn').addEventListener('click', () => this._showEmailModal());
     this._renderDateInput();
     await this._loadTable();
   }
@@ -2194,12 +2359,15 @@ class DashboardPage {
     this._mode = mode;
     const btnMonthly = document.getElementById('modeMonthly');
     const btnWeekly = document.getElementById('modeWeekly');
+    const dlBtn = document.getElementById('dashDownloadBtn');
     if (mode === 'monthly') {
       btnMonthly.style.background = 'var(--accent-cyan)'; btnMonthly.style.color = '#000';
       btnWeekly.style.background = 'var(--bg-medium)'; btnWeekly.style.color = 'var(--text-secondary)';
+      dlBtn.textContent = 'XLSX 다운로드';
     } else {
       btnWeekly.style.background = 'var(--accent-cyan)'; btnWeekly.style.color = '#000';
       btnMonthly.style.background = 'var(--bg-medium)'; btnMonthly.style.color = 'var(--text-secondary)';
+      dlBtn.textContent = 'CSV 다운로드';
     }
     this._renderDateInput();
     this._loadTable();
@@ -2247,49 +2415,378 @@ class DashboardPage {
     if (!range) return;
     wrap.innerHTML = '<span style="color:var(--text-muted)">로딩 중...</span>';
     try {
-      const rows = this._mode === 'monthly'
-        ? await window.api.getMonthlyStats(document.getElementById('dashPicker').value)
-        : await window.api.getPeriodStats(range.start, range.end);
-      this._lastRows = rows || [];
-      this._label = range.label;
-      if (!rows || rows.length === 0) {
-        wrap.innerHTML = '<span style="color:var(--text-muted)">해당 기간에 이용 데이터가 없습니다.</span>';
-        return;
+      if (this._mode === 'monthly') {
+        const yearMonth = document.getElementById('dashPicker').value;
+        const [detailRows, activeUsers] = await Promise.all([
+          window.api.getMonthlyDetailStats(yearMonth),
+          window.api.searchUsers('', 'active')
+        ]);
+        this._label = range.label;
+
+        // 해당 월의 평일(월~금) 날짜 목록 계산
+        const [y, m] = yearMonth.split('-');
+        const lastDay = new Date(+y, +m, 0).getDate();
+        const weekdays = [];
+        for (let d = 1; d <= lastDay; d++) {
+          const dt = new Date(+y, +m - 1, d);
+          const dow = dt.getDay();
+          if (dow >= 1 && dow <= 5) {
+            const dateStr = `${yearMonth}-${String(d).padStart(2, '0')}`;
+            weekdays.push({ dateStr, day: d, dow });
+          }
+        }
+
+        // detailRows를 Map<user_id, Map<event_date, cellValue>>로 그룹핑
+        const userDateMap = new Map();
+        for (const row of (detailRows || [])) {
+          if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+          const method = row.input_method === 'card' ? '카드' : '수동';
+          const cell = `${row.final_menu}(${method})`;
+          userDateMap.get(row.user_id).set(row.event_date, cell);
+        }
+
+        // 모든 활성 사용자를 번호순 정렬
+        const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+          const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+          return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+        });
+
+        // _lastRows 캐시 (XLSX 다운로드용)
+        this._lastRows = { weekdays, userDateMap, sortedUsers };
+
+        // 테이블 렌더링
+        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+        const headerCells = weekdays.map(wd =>
+          `<th style="min-width:70px; text-align:center; font-size:12px; white-space:nowrap;">${wd.day}일(${dayNames[wd.dow]})</th>`
+        ).join('');
+
+        const bodyRows = sortedUsers.map(u => {
+          const dateMap = userDateMap.get(u.id) || new Map();
+          const cells = weekdays.map(wd => {
+            const val = dateMap.get(wd.dateStr);
+            if (val) return `<td style="text-align:center; font-size:11px; white-space:nowrap;">${val}</td>`;
+            return `<td style="text-align:center; color: var(--error); font-weight: bold;">X</td>`;
+          }).join('');
+          return `<tr><td style="text-align:center">${u.number}</td><td>${u.name}</td>${cells}</tr>`;
+        }).join('');
+
+        if (sortedUsers.length === 0) {
+          wrap.innerHTML = '<span style="color:var(--text-muted)">활성 사용자가 없습니다.</span>';
+          return;
+        }
+
+        wrap.innerHTML = `
+          <div style="overflow-x: auto;">
+            <table class="data-table" style="width: 100%;">
+              <thead><tr>
+                <th style="width:60px">번호</th><th style="width:80px">이름</th>${headerCells}
+              </tr></thead>
+              <tbody>${bodyRows}</tbody>
+            </table>
+          </div>
+        `;
+      } else {
+        // weekly mode: 전체 사용자 × 평일 일별 테이블
+        const [detailRows, activeUsers] = await Promise.all([
+          window.api.getPeriodDetailStats(range.start, range.end),
+          window.api.searchUsers('', 'active')
+        ]);
+        this._label = range.label;
+
+        // 해당 주의 평일(월~금) 날짜 목록 계산
+        const weekdays = [];
+        const startDt = new Date(range.start + 'T00:00:00');
+        const endDt = new Date(range.end + 'T00:00:00');
+        for (let dt = new Date(startDt); dt <= endDt; dt.setDate(dt.getDate() + 1)) {
+          const dow = dt.getDay();
+          if (dow >= 1 && dow <= 5) {
+            const dateStr = dt.toISOString().slice(0, 10);
+            weekdays.push({ dateStr, day: dt.getDate(), dow });
+          }
+        }
+
+        // detailRows를 Map<user_id, Map<event_date, cellValue>>로 그룹핑
+        const userDateMap = new Map();
+        for (const row of (detailRows || [])) {
+          if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+          const method = row.input_method === 'card' ? '카드' : '수동';
+          const cell = `${row.final_menu}(${method})`;
+          userDateMap.get(row.user_id).set(row.event_date, cell);
+        }
+
+        // 모든 활성 사용자를 번호순 정렬
+        const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+          const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+          return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+        });
+
+        // _lastRows 캐시 (다운로드용)
+        this._lastRows = { weekdays, userDateMap, sortedUsers };
+
+        if (sortedUsers.length === 0) {
+          wrap.innerHTML = '<span style="color:var(--text-muted)">활성 사용자가 없습니다.</span>';
+          return;
+        }
+
+        // 테이블 렌더링
+        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+        const headerCells = weekdays.map(wd =>
+          `<th style="min-width:70px; text-align:center; font-size:12px; white-space:nowrap;">${wd.day}일(${dayNames[wd.dow]})</th>`
+        ).join('');
+
+        const bodyRows = sortedUsers.map(u => {
+          const dateMap = userDateMap.get(u.id) || new Map();
+          const cells = weekdays.map(wd => {
+            const val = dateMap.get(wd.dateStr);
+            if (val) return `<td style="text-align:center; font-size:11px; white-space:nowrap;">${val}</td>`;
+            return `<td style="text-align:center; color: var(--error); font-weight: bold;">X</td>`;
+          }).join('');
+          return `<tr><td style="text-align:center">${u.number}</td><td>${u.name}</td>${cells}</tr>`;
+        }).join('');
+
+        wrap.innerHTML = `
+          <div style="overflow-x: auto;">
+            <table class="data-table" style="width: 100%;">
+              <thead><tr>
+                <th style="width:60px">번호</th><th style="width:80px">이름</th>${headerCells}
+              </tr></thead>
+              <tbody>${bodyRows}</tbody>
+            </table>
+          </div>
+        `;
       }
-      const totals = rows.reduce((a, r) => ({ t: a.t + r.total_count, n: a.n + r.normal_count, p: a.p + r.porridge_count }), { t: 0, n: 0, p: 0 });
-      wrap.innerHTML = `
-        <div style="overflow-x: auto;">
-          <table class="data-table" style="width: 100%;">
-            <thead><tr>
-              <th style="width:60px">번호</th><th>이름</th><th style="width:100px">총 이용</th><th style="width:100px">일반식</th><th style="width:100px">죽식</th>
-            </tr></thead>
-            <tbody>
-              ${rows.map(r => `<tr><td>${r.number}</td><td>${r.name}</td><td style="text-align:center">${r.total_count}</td><td style="text-align:center">${r.normal_count}</td><td style="text-align:center">${r.porridge_count}</td></tr>`).join('')}
-            </tbody>
-            <tfoot><tr style="font-weight:600; border-top: 2px solid var(--border);">
-              <td colspan="2" style="text-align:center">합계 (${rows.length}명)</td>
-              <td style="text-align:center">${totals.t}</td><td style="text-align:center">${totals.n}</td><td style="text-align:center">${totals.p}</td>
-            </tr></tfoot>
-          </table>
-        </div>
-      `;
     } catch (e) {
       wrap.innerHTML = `<span style="color:var(--error)">오류: ${e.message}</span>`;
     }
   }
 
-  _downloadCSV() {
-    if (!this._lastRows || this._lastRows.length === 0) return;
-    const BOM = '\uFEFF';
-    const header = '번호,이름,총 이용,일반식,죽식';
-    const body = this._lastRows.map(r => `${r.number},${r.name},${r.total_count},${r.normal_count},${r.porridge_count}`).join('\n');
-    const blob = new Blob([BOM + header + '\n' + body], { type: 'text/csv;charset=utf-8;' });
+  // 주간 XLSX 워크북 생성 (다운로드 & 이메일 공용)
+  _buildWeeklyWorkbook() {
+    if (!this._lastRows || !this._lastRows.weekdays) return null;
+    const { weekdays, userDateMap, sortedUsers } = this._lastRows;
+    if (!sortedUsers || sortedUsers.length === 0) return null;
+
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const headerRow = ['번호', '이름', ...weekdays.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+    const aoa = [headerRow];
+    for (const u of sortedUsers) {
+      const dateMap = userDateMap.get(u.id) || new Map();
+      const cells = weekdays.map(wd => dateMap.get(wd.dateStr) || 'X');
+      aoa.push([u.number, u.name, ...cells]);
+    }
+
+    if (typeof XLSX === 'undefined') return null;
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 8 }, { wch: 10 }, ...weekdays.map(() => ({ wch: 14 }))];
+    XLSX.utils.book_append_sheet(wb, ws, '이용현황');
+    return wb;
+  }
+
+  // 월간 XLSX 워크북 생성 (다운로드 & 이메일 공용)
+  async _buildMonthlyWorkbook() {
+    const yearMonth = document.getElementById('dashPicker')?.value;
+    if (!yearMonth) return null;
+    const [y, m] = yearMonth.split('-');
+
+    const [detailRows, activeUsers] = await Promise.all([
+      window.api.getMonthlyDetailStats(yearMonth),
+      window.api.searchUsers('', 'active')
+    ]);
+
+    const holidays = await window.api.getHolidays(+y, +m);
+    const holidaySet = new Set(holidays);
+    const lastDay = new Date(+y, +m, 0).getDate();
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const weekdays = [];
+    for (let d = 1; d <= lastDay; d++) {
+      const dt = new Date(+y, +m - 1, d);
+      const dow = dt.getDay();
+      if (dow >= 1 && dow <= 5 && !holidaySet.has(d)) {
+        weekdays.push({ dateStr: `${yearMonth}-${String(d).padStart(2, '0')}`, day: d, dow });
+      }
+    }
+
+    const userDateMap = new Map();
+    for (const row of (detailRows || [])) {
+      if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+      const method = row.input_method === 'card' ? '카드' : '수동';
+      const cell = `${row.final_menu}(${method})`;
+      userDateMap.get(row.user_id).set(row.event_date, cell);
+    }
+
+    const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+      const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+      return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+    });
+
+    const headerRow = ['번호', '이름', ...weekdays.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+    const aoa = [headerRow];
+    for (const u of sortedUsers) {
+      const dateMap = userDateMap.get(u.id) || new Map();
+      const cells = weekdays.map(wd => dateMap.get(wd.dateStr) || 'X');
+      aoa.push([u.number, u.name, ...cells]);
+    }
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 8 }, { wch: 10 }, ...weekdays.map(() => ({ wch: 14 }))];
+    XLSX.utils.book_append_sheet(wb, ws, '전체');
+
+    // 주차별 시트 추가
+    const weeks = [];
+    let currentWeek = null;
+    for (const wd of weekdays) {
+      if (!currentWeek || wd.dow === 1) {
+        currentWeek = [];
+        weeks.push(currentWeek);
+      }
+      currentWeek.push(wd);
+    }
+    for (let wi = 0; wi < weeks.length; wi++) {
+      const wk = weeks[wi];
+      const sheetName = `${wi + 1}주차(${wk[0].day}~${wk[wk.length - 1].day}일)`;
+      const wkHeader = ['번호', '이름', ...wk.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+      const wkAoa = [wkHeader];
+      const filtered = sortedUsers.filter(u => {
+        const dateMap = userDateMap.get(u.id) || new Map();
+        const xCount = wk.filter(wd => !dateMap.has(wd.dateStr)).length;
+        return xCount >= 3;
+      });
+      for (const u of filtered) {
+        const dateMap = userDateMap.get(u.id) || new Map();
+        const cells = wk.map(wd => dateMap.get(wd.dateStr) || 'X');
+        wkAoa.push([u.number, u.name, ...cells]);
+      }
+      const wkWs = XLSX.utils.aoa_to_sheet(wkAoa);
+      wkWs['!cols'] = [{ wch: 8 }, { wch: 10 }, ...wk.map(() => ({ wch: 14 }))];
+      XLSX.utils.book_append_sheet(wb, wkWs, sheetName);
+    }
+
+    return wb;
+  }
+
+  async _downloadCSV() {
+    const wb = this._mode === 'monthly'
+      ? await this._buildMonthlyWorkbook()
+      : this._buildWeeklyWorkbook();
+    if (!wb) return;
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `이용현황_${this._label}.csv`;
+    a.download = `이용현황_${this._label}.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async _buildAttachment() {
+    const wb = this._mode === 'monthly'
+      ? await this._buildMonthlyWorkbook()
+      : this._buildWeeklyWorkbook();
+    if (!wb) return null;
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+  }
+
+  async _showEmailModal() {
+    if (!this._lastRows || !this._lastRows.weekdays) {
+      app.showToast('먼저 통계 데이터를 조회하세요.', 'warning');
+      return;
+    }
+
+    const defaultTo = await window.api.getSetting('smtp_default_to', '');
+    const label = this._label || '이용현황';
+
+    const overlay = document.createElement('div');
+    overlay.className = 'custom-dialog-overlay';
+    overlay.innerHTML = `
+      <div class="custom-dialog" style="border-top: 3px solid var(--accent-cyan); max-width: 500px;">
+        <div class="custom-dialog-header">
+          <span class="custom-dialog-icon">📧</span>
+          <h4 class="custom-dialog-title">이메일 발송</h4>
+        </div>
+        <div class="custom-dialog-body" style="display:flex;flex-direction:column;gap:12px;">
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">수신자</label>
+            <input type="text" id="emailTo" class="s-input-text" value="${defaultTo}" placeholder="recipient@example.com" style="width:100%;" />
+          </div>
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">제목</label>
+            <input type="text" id="emailSubject" class="s-input-text" value="이용현황 - ${label}" style="width:100%;" />
+          </div>
+          <div>
+            <label style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;display:block;">본문 (선택)</label>
+            <textarea id="emailBody" class="s-input-text" rows="3" style="width:100%;resize:vertical;" placeholder="추가 메시지를 입력하세요..."></textarea>
+          </div>
+          <div id="emailError" style="color:var(--error);font-size:13px;display:none;"></div>
+        </div>
+        <div class="custom-dialog-actions">
+          <button class="btn btn-ghost" id="emailCancel">취소</button>
+          <button class="btn btn-primary" id="emailSend">발송</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const cleanup = () => overlay.remove();
+
+    overlay.querySelector('#emailCancel').onclick = cleanup;
+
+    overlay.querySelector('#emailSend').onclick = async () => {
+      const to = overlay.querySelector('#emailTo').value.trim();
+      const subject = overlay.querySelector('#emailSubject').value.trim();
+      const body = overlay.querySelector('#emailBody').value.trim();
+      const errorEl = overlay.querySelector('#emailError');
+
+      if (!to) {
+        errorEl.textContent = '수신자 이메일을 입력하세요.';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      const attachment = await this._buildAttachment();
+      if (!attachment) {
+        errorEl.textContent = '통계 데이터가 없습니다.';
+        errorEl.style.display = 'block';
+        return;
+      }
+
+      const sendBtn = overlay.querySelector('#emailSend');
+      sendBtn.disabled = true;
+      sendBtn.textContent = '발송 중...';
+      errorEl.style.display = 'none';
+
+      try {
+        const res = await window.api.sendMail({
+          to,
+          subject,
+          body,
+          attachment,
+          attachmentFilename: `이용현황_${this._label || 'data'}`,
+        });
+        if (res.success) {
+          cleanup();
+          app.showToast('이메일 발송 완료!', 'success');
+        } else {
+          errorEl.textContent = `발송 실패: ${res.message}`;
+          errorEl.style.display = 'block';
+          sendBtn.disabled = false;
+          sendBtn.textContent = '발송';
+        }
+      } catch (e) {
+        errorEl.textContent = `오류: ${e.message}`;
+        errorEl.style.display = 'block';
+        sendBtn.disabled = false;
+        sendBtn.textContent = '발송';
+      }
+    };
+
+    return { cleanup };
   }
 
   cleanup() { }
@@ -2347,6 +2844,11 @@ class SettingsPage {
         id: 'export', icon: '📤', name: '내보내기', color: '#f59e0b',
         desc: 'CSV 내보내기 옵션',
         keys: ['export_include_ticket', 'export_encoding'],
+      },
+      {
+        id: 'email', icon: '📧', name: '이메일', color: '#06b6d4',
+        desc: 'SMTP 서버 및 이메일 발송 설정',
+        keys: ['smtp_provider', 'smtp_user', 'smtp_pass', 'smtp_default_to'],
       },
       {
         id: 'logging', icon: '📋', name: '로깅', color: '#6b7280',
@@ -2410,6 +2912,10 @@ class SettingsPage {
       max_backups:                 { label: '최대 백업 수',          desc: '오래된 백업 자동 삭제 기준', type: 'number', unit: '개' },
       export_include_ticket:       { label: '식권 포함',            desc: 'CSV 내보내기 시 식권 데이터 포함', type: 'bool' },
       export_encoding:             { label: 'CSV 인코딩',           desc: '내보내기 파일 문자 인코딩', type: 'select', options: [['UTF-8','UTF-8'],['EUC-KR','EUC-KR']] },
+      smtp_provider:               { label: '메일 서비스',           desc: '사용할 이메일 서비스 선택', type: 'select', options: [['gmail','Gmail'],['naver','네이버'],['daum','다음/카카오']] },
+      smtp_user:                   { label: '이메일 주소',           desc: '발신에 사용할 이메일 주소', type: 'text', placeholder: 'user@gmail.com' },
+      smtp_pass:                   { label: '비밀번호',             desc: 'Gmail은 앱 비밀번호, 네이버/다음은 계정 비밀번호', type: 'password', placeholder: '앱 비밀번호' },
+      smtp_default_to:             { label: '기본 수신자',           desc: '이메일 발송 시 기본 수신 주소', type: 'text', placeholder: 'recipient@example.com' },
       log_level:                   { label: '로그 레벨',            desc: '기록할 로그의 최소 심각도', type: 'select', options: [['DEBUG','DEBUG'],['INFO','INFO'],['WARNING','WARNING'],['ERROR','ERROR']] },
       log_retention_days:          { label: '로그 보관 기간',        desc: '오래된 로그 자동 삭제 기준', type: 'number', unit: '일' },
     };
@@ -2510,6 +3016,29 @@ class SettingsPage {
     });
 
     const content = document.getElementById('settingsContent');
+    const emailInfo = groupId === 'email' ? `
+      <div style="background:var(--bg-medium);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--text-secondary);line-height:1.8;">
+        <strong style="color:var(--text-primary);">📧 이메일 설정 안내</strong><br>
+        <div style="margin:8px 0;">
+          <strong style="color:var(--accent-cyan);">Gmail (앱 비밀번호 필수)</strong><br>
+          Gmail은 보안 정책상 일반 비밀번호로 SMTP 로그인이 차단됩니다.<br>
+          반드시 <strong>앱 비밀번호</strong>(16자리)를 생성하여 아래 비밀번호란에 입력하세요.<br>
+          <span style="color:var(--text-muted);">경로: Google 계정 → 보안 → 2단계 인증 활성화 → 상단 검색창에 "앱 비밀번호" 검색 → 생성</span>
+        </div>
+        <div style="margin:8px 0;">
+          <strong>네이버</strong>: 네이버 메일 → 환경설정 → POP3/SMTP → 사용함 설정 필요<br>
+          <strong>다음/카카오</strong>: Daum 메일 → 환경설정 → POP3/SMTP → 사용함 설정 필요
+        </div>
+        자세한 설정 방법은 <strong>도움말</strong> 페이지를 참고하세요.
+      </div>
+    ` : '';
+    const emailTestBtn = groupId === 'email' ? `
+      <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px;">
+        <button id="smtpTestBtn" class="btn" style="padding:8px 20px;background:var(--accent-cyan);color:#000;border:none;border-radius:var(--radius-sm);font-weight:600;">연결 테스트</button>
+        <span id="smtpTestResult" style="font-size:13px;color:var(--text-muted);"></span>
+      </div>
+    ` : '';
+
     content.innerHTML = `
       <div class="s-panel">
         <div class="s-panel-header">
@@ -2520,12 +3049,47 @@ class SettingsPage {
           </div>
         </div>
         <div class="s-panel-body">
+          ${emailInfo}
           ${this._renderSettingRows(group.keys, meta)}
+          ${emailTestBtn}
         </div>
       </div>
     `;
 
     this._bindHandlers(content);
+
+    // SMTP 연결 테스트 버튼 핸들러
+    if (groupId === 'email') {
+      const testBtn = document.getElementById('smtpTestBtn');
+      const testResult = document.getElementById('smtpTestResult');
+      if (testBtn) {
+        testBtn.addEventListener('click', async () => {
+          testBtn.disabled = true;
+          testBtn.textContent = '테스트 중...';
+          testResult.textContent = '';
+          testResult.style.color = 'var(--text-muted)';
+          console.log('[SMTP] 연결 테스트 요청...');
+          try {
+            const res = await window.api.testMail();
+            if (res.success) {
+              console.log('[SMTP] 연결 테스트 성공');
+              testResult.textContent = '✅ 연결 성공!';
+              testResult.style.color = 'var(--success, #22c55e)';
+            } else {
+              console.error(`[SMTP] 연결 테스트 실패: ${res.message}`);
+              testResult.textContent = `❌ 실패: ${res.message}`;
+              testResult.style.color = 'var(--error)';
+            }
+          } catch (e) {
+            console.error(`[SMTP] 연결 테스트 오류: ${e.message}`);
+            testResult.textContent = `❌ 오류: ${e.message}`;
+            testResult.style.color = 'var(--error)';
+          }
+          testBtn.disabled = false;
+          testBtn.textContent = '연결 테스트';
+        });
+      }
+    }
   }
 
   _renderSearchResults() {
@@ -2628,6 +3192,12 @@ class SettingsPage {
         </div>
       `;
     }
+    if (m.type === 'password') {
+      const hasSaved = !!value;
+      return `<input type="password" class="s-input-text" data-key="${key}" value=""
+        placeholder="${hasSaved ? '●●●●●●●● (저장됨)' : (m.placeholder || '')}"
+        ${hasSaved ? 'data-has-saved="1"' : ''} />`;
+    }
     // text
     return `<input type="text" class="s-input-text" data-key="${key}" value="${value ?? ''}" placeholder="${m.placeholder || ''}" />`;
   }
@@ -2641,6 +3211,7 @@ class SettingsPage {
         else if (el.type === 'range') value = el.value;
         else value = el.value;
 
+        if (el.type === 'password' && !value && el.dataset.hasSaved) return;
         this._allSettings[key] = value;
         await window.api.setSetting(key, value);
 
@@ -2682,6 +3253,7 @@ class SettingsPage {
         el.addEventListener('change', save);
       }
     });
+
   }
 
   cleanup() { }
@@ -2741,6 +3313,140 @@ class SetupWizardPage {
         btn.textContent = '설정 완료';
       }
     });
+  }
+
+  cleanup() { }
+}
+
+/* ---- Help Page ---- */
+class HelpPage {
+  render() {
+    const el = document.createElement('div');
+    el.className = 'fade-in';
+    el.innerHTML = `
+      <div style="max-width:800px;margin:0 auto;display:flex;flex-direction:column;gap:20px;">
+        <div style="background:var(--card-bg);border-radius:var(--radius-md);padding:24px;">
+          <h3 class="section-title" style="margin-top:0;">📧 이메일 설정 가이드</h3>
+          <div style="color:var(--text-secondary);line-height:1.8;font-size:14px;">
+
+            <h4 style="color:var(--accent-cyan);margin:16px 0 8px;">Gmail 앱 비밀번호 설정 (상세)</h4>
+            <div style="background:var(--bg-medium);border-radius:var(--radius-sm);padding:16px;margin-bottom:16px;">
+              <p style="margin:0 0 8px;"><strong style="color:var(--error);">⚠️ Gmail은 일반 계정 비밀번호로는 SMTP 로그인이 차단됩니다.</strong><br>
+              반드시 아래 절차에 따라 <strong>앱 비밀번호</strong>를 생성해야 합니다.</p>
+              <ol style="padding-left:20px;margin:8px 0;">
+                <li>웹 브라우저에서 <strong>Google 계정 관리</strong> 페이지에 접속합니다.<br>
+                  <span style="color:var(--text-muted);">(myaccount.google.com → 또는 Gmail 우측 상단 프로필 → "Google 계정 관리")</span></li>
+                <li>왼쪽 메뉴에서 <strong>"보안"</strong> 탭을 클릭합니다.</li>
+                <li><strong>"Google에 로그인하는 방법"</strong> 섹션에서 <strong>"2단계 인증"</strong>을 클릭하고 활성화합니다.<br>
+                  <span style="color:var(--text-muted);">(이미 활성화되어 있으면 이 단계를 건너뜁니다)</span></li>
+                <li>Google 계정 페이지 <strong>상단 검색창</strong>에 <strong>"앱 비밀번호"</strong>를 입력하고 검색합니다.<br>
+                  <span style="color:var(--text-muted);">(2단계 인증 페이지 안에는 "앱 비밀번호" 항목이 직접 보이지 않을 수 있습니다.<br>
+                  반드시 Google 계정 상단의 검색창을 이용하세요.)</span></li>
+                <li>검색 결과에서 <strong>"앱 비밀번호"</strong>를 클릭하여 진입합니다.</li>
+                <li>앱 이름에 <strong>"경로식당"</strong> 등 알아볼 수 있는 이름을 입력하고 <strong>"만들기"</strong>를 클릭합니다.</li>
+                <li>화면에 표시되는 <strong>16자리 비밀번호</strong>(예: abcd efgh ijkl mnop)를 복사합니다.<br>
+                  <span style="color:var(--text-muted);">(이 비밀번호는 한 번만 표시되므로 바로 복사하세요)</span></li>
+                <li>이 프로그램의 <strong>⚙️ 설정 → 이메일 → 비밀번호</strong>란에 복사한 16자리를 붙여넣습니다.<br>
+                  <span style="color:var(--text-muted);">(공백 포함/미포함 모두 가능)</span></li>
+                <li><strong>"연결 테스트"</strong> 버튼을 눌러 정상 연결을 확인합니다.</li>
+              </ol>
+            </div>
+
+            <h4 style="color:var(--text-primary);margin:16px 0 8px;">네이버 메일 설정</h4>
+            <ol style="padding-left:20px;">
+              <li>네이버 메일 접속 → 좌측 하단 <strong>"환경설정"</strong> 클릭</li>
+              <li><strong>"POP3/IMAP 설정"</strong> 탭 선택</li>
+              <li><strong>"POP3/SMTP 사용"</strong>을 <strong>"사용함"</strong>으로 변경 후 저장</li>
+              <li>비밀번호란에는 네이버 <strong>계정 비밀번호</strong>를 입력합니다.</li>
+            </ol>
+
+            <h4 style="color:var(--text-primary);margin:16px 0 8px;">다음/카카오 메일 설정</h4>
+            <ol style="padding-left:20px;">
+              <li>Daum 메일 접속 → 상단 <strong>"환경설정"</strong> 클릭</li>
+              <li><strong>"POP3/SMTP"</strong> 탭 선택</li>
+              <li><strong>"POP3/SMTP 사용"</strong>을 <strong>"사용함"</strong>으로 변경 후 저장</li>
+              <li>비밀번호란에는 다음/카카오 <strong>계정 비밀번호</strong>를 입력합니다.</li>
+            </ol>
+
+            <h4 style="color:var(--text-primary);margin:16px 0 8px;">이 프로그램에서 설정 찾는 방법</h4>
+            <ol style="padding-left:20px;">
+              <li>좌측 사이드바에서 <strong>⚙️ 설정</strong>을 클릭합니다.</li>
+              <li>설정 페이지 상단의 그룹 탭에서 <strong>"이메일"</strong>을 클릭합니다.</li>
+              <li><strong>메일 서비스</strong>를 선택하고 (Gmail / 네이버 / 다음), <strong>이메일 주소</strong>와 <strong>비밀번호</strong>를 입력합니다.</li>
+              <li><strong>"연결 테스트"</strong> 버튼을 눌러 설정이 올바른지 확인합니다.</li>
+            </ol>
+
+            <table style="width:100%;border-collapse:collapse;margin:12px 0;">
+              <thead><tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left;padding:8px;color:var(--text-primary);">서비스</th>
+                <th style="text-align:left;padding:8px;color:var(--text-primary);">SMTP 호스트</th>
+                <th style="text-align:left;padding:8px;color:var(--text-primary);">포트</th>
+                <th style="text-align:left;padding:8px;color:var(--text-primary);">비밀번호</th>
+              </tr></thead>
+              <tbody>
+                <tr style="border-bottom:1px solid var(--border);">
+                  <td style="padding:8px;">Gmail</td>
+                  <td style="padding:8px;"><code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">smtp.gmail.com</code></td>
+                  <td style="padding:8px;">587 (STARTTLS)</td>
+                  <td style="padding:8px;"><strong style="color:var(--accent-cyan);">앱 비밀번호 (16자리)</strong></td>
+                </tr>
+                <tr style="border-bottom:1px solid var(--border);">
+                  <td style="padding:8px;">네이버</td>
+                  <td style="padding:8px;"><code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">smtp.naver.com</code></td>
+                  <td style="padding:8px;">587 (STARTTLS)</td>
+                  <td style="padding:8px;">계정 비밀번호</td>
+                </tr>
+                <tr style="border-bottom:1px solid var(--border);">
+                  <td style="padding:8px;">다음/카카오</td>
+                  <td style="padding:8px;"><code style="background:var(--bg-medium);padding:2px 6px;border-radius:3px;">smtp.daum.net</code></td>
+                  <td style="padding:8px;">465 (SSL)</td>
+                  <td style="padding:8px;">계정 비밀번호</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="background:var(--card-bg);border-radius:var(--radius-md);padding:24px;">
+          <h3 class="section-title" style="margin-top:0;">📋 주요 기능 안내</h3>
+          <div style="color:var(--text-secondary);line-height:1.8;font-size:14px;">
+            <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 16px;align-items:start;">
+              <span>🏠 <strong style="color:var(--text-primary);">홈</strong></span>
+              <span>오늘의 이용 현황 요약 및 통계 카드</span>
+              <span>📊 <strong style="color:var(--text-primary);">실시간 현황</strong></span>
+              <span>카드 리더기 연동, 실시간 체크인 모니터링</span>
+              <span>👥 <strong style="color:var(--text-primary);">사용자 관리</strong></span>
+              <span>이용자 등록, 수정, 카드 발급 및 관리</span>
+              <span>⚠️ <strong style="color:var(--text-primary);">특이사항</strong></span>
+              <span>특이사항 등록 및 사용자별 지정</span>
+              <span>📈 <strong style="color:var(--text-primary);">통계</strong></span>
+              <span>월간/주간 이용 현황 조회 및 XLSX 다운로드, 이메일 발송</span>
+              <span>📧 <strong style="color:var(--text-primary);">이메일</strong></span>
+              <span>설정 → 이메일에서 SMTP 설정 후, 통계 페이지 또는 종료 시 발송 가능</span>
+              <span>⚙️ <strong style="color:var(--text-primary);">설정</strong></span>
+              <span>체크인 판정, TTS, 화면, 백업, 이메일 등 세부 설정</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:var(--card-bg);border-radius:var(--radius-md);padding:24px;">
+          <h3 class="section-title" style="margin-top:0;">ℹ️ 앱 정보</h3>
+          <div style="color:var(--text-secondary);font-size:14px;line-height:1.8;">
+            <p>경로식당 이용자 관리 프로그램</p>
+            <p>버전: <span id="helpVersion">로딩 중...</span></p>
+          </div>
+        </div>
+      </div>
+    `;
+    return el;
+  }
+
+  async afterRender() {
+    try {
+      const ver = await window.api.getVersion();
+      const el = document.getElementById('helpVersion');
+      if (el) el.textContent = `v${ver}`;
+    } catch (e) { /* skip */ }
   }
 
   cleanup() { }

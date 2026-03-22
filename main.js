@@ -163,6 +163,21 @@ function createWindow() {
     }
   });
 
+  // 종료 확인 모달 지원
+  let forceClose = false;
+
+  mainWindow.on('close', (e) => {
+    if (!forceClose) {
+      e.preventDefault();
+      mainWindow.webContents.send('app:close-requested');
+    }
+  });
+
+  ipcMain.on('app:close-confirmed', () => {
+    forceClose = true;
+    if (mainWindow) mainWindow.close();
+  });
+
   mainWindow.on('closed', () => {
     if (logger) logger.setWindow(null);
     mainWindow = null;
@@ -341,6 +356,7 @@ ipcMain.handle('db:unassignRemark', (_, userId, remarkId) => db.unassignRemark(u
 ipcMain.handle('db:getUserStatistics', () => db.getUserStatistics());
 ipcMain.handle('db:getMonthlyStats', (_, yearMonth) => db.getMonthlyStats(yearMonth));
 ipcMain.handle('db:getMonthlyDetailStats', (_, yearMonth) => db.getMonthlyDetailStats(yearMonth));
+ipcMain.handle('db:getPeriodDetailStats', (_, startDate, endDate) => db.getPeriodDetailStats(startDate, endDate));
 ipcMain.handle('db:getPeriodStats', (_, startDate, endDate) => {
   return db.getPeriodStats(startDate, endDate);
 });
@@ -350,6 +366,7 @@ ipcMain.handle('db:getDailyRangeStats', (_, startDate, endDate) => {
 ipcMain.handle('db:getAllUsersWeekdayUsage', (_, startDate, endDate) => {
   return db.getAllUsersWeekdayUsage(startDate, endDate);
 });
+ipcMain.handle('db:getOperatingDays', (_, startDate, endDate) => db.getOperatingDays(startDate, endDate));
 
 // 삭제된 사용자
 ipcMain.handle('db:getDeletedUsers', (_, search) => db.getDeletedUsers(search));
@@ -441,20 +458,31 @@ ipcMain.handle('setup:createDatabase', async (_, basePath) => {
 
 // ==================== 메일 발송 IPC ====================
 
+const SMTP_PROVIDERS = {
+  gmail: { host: 'smtp.gmail.com', port: 587, secure: false },
+  naver: { host: 'smtp.naver.com', port: 587, secure: false },
+  daum:  { host: 'smtp.daum.net',  port: 465, secure: true },
+};
+
+function getSmtpConfig() {
+  const provider = settings.get('smtp_provider', 'gmail');
+  const smtp = SMTP_PROVIDERS[provider] || SMTP_PROVIDERS.gmail;
+  const user = settings.get('smtp_user', '');
+  const pass = decryptValue(settings.get('smtp_pass', ''));
+  return { ...smtp, user, pass };
+}
+
 ipcMain.handle('mail:send', async (_, opts) => {
   try {
     const nodemailer = require('nodemailer');
-    const host = settings.get('smtp_host', '');
-    const port = parseInt(settings.get('smtp_port', '587'), 10);
-    const user = settings.get('smtp_user', '');
-    const pass = decryptValue(settings.get('smtp_pass', ''));
+    const { host, port, secure, user, pass } = getSmtpConfig();
 
-    if (!host || !user || !pass) {
-      return { success: false, message: 'SMTP 설정이 완료되지 않았습니다. 설정 페이지에서 SMTP 정보를 입력하세요.' };
+    if (!user || !pass) {
+      return { success: false, message: 'SMTP 설정이 완료되지 않았습니다. 설정 페이지에서 이메일 정보를 입력하세요.' };
     }
 
     const transporter = nodemailer.createTransport({
-      host, port, secure: port === 465,
+      host, port, secure,
       auth: { user, pass },
     });
 
@@ -463,10 +491,16 @@ ipcMain.handle('mail:send', async (_, opts) => {
       to: opts.to,
       subject: opts.subject || '이용현황',
       text: opts.body || '',
-      attachments: opts.csvContent ? [{
-        filename: opts.csvFilename || 'data.csv',
-        content: Buffer.from(opts.csvContent, 'utf-8'),
-        contentType: 'text/csv',
+      attachments: opts.attachment ? [{
+        filename: opts.attachment.type === 'xlsx'
+          ? `${opts.attachmentFilename || 'data'}.xlsx`
+          : `${opts.attachmentFilename || 'data'}.csv`,
+        content: opts.attachment.type === 'xlsx'
+          ? Buffer.from(opts.attachment.data)
+          : Buffer.from(opts.attachment.data, 'utf-8'),
+        contentType: opts.attachment.type === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'text/csv',
       }] : [],
     };
 
@@ -482,25 +516,39 @@ ipcMain.handle('mail:send', async (_, opts) => {
 ipcMain.handle('mail:test', async () => {
   try {
     const nodemailer = require('nodemailer');
-    const host = settings.get('smtp_host', '');
-    const port = parseInt(settings.get('smtp_port', '587'), 10);
-    const user = settings.get('smtp_user', '');
-    const pass = decryptValue(settings.get('smtp_pass', ''));
+    const { host, port, secure, user, pass } = getSmtpConfig();
 
-    if (!host || !user || !pass) {
+    logger.info(`SMTP 연결 테스트 시작 (host=${host}, port=${port}, user=${user})`);
+
+    if (!user || !pass) {
+      logger.warning('SMTP 연결 테스트 실패: 설정 미완료');
       return { success: false, message: 'SMTP 설정이 완료되지 않았습니다.' };
     }
 
     const transporter = nodemailer.createTransport({
-      host, port, secure: port === 465,
+      host, port, secure,
       auth: { user, pass },
     });
 
     await transporter.verify();
+    logger.info('SMTP 연결 테스트 성공');
     return { success: true };
   } catch (err) {
+    logger.error(`SMTP 연결 테스트 실패: ${err.message}`);
     return { success: false, message: err.message };
   }
+});
+
+// ==================== 공휴일 ====================
+
+ipcMain.handle('app:getHolidays', async (_, year, month) => {
+  const { isHoliday } = await import('@hyunbinseo/holidays-kr');
+  const lastDay = new Date(year, month, 0).getDate();
+  const holidays = [];
+  for (let d = 1; d <= lastDay; d++) {
+    if (isHoliday(new Date(year, month - 1, d))) holidays.push(d);
+  }
+  return holidays;
 });
 
 // ==================== 카드 리더기 IPC ====================

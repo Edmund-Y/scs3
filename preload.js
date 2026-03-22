@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('api', {
   getBasePath: () => ipcRenderer.invoke('app:getBasePath'),
   saveBasePath: (p) => ipcRenderer.invoke('app:saveBasePath', p),
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
+  getHolidays: (year, month) => ipcRenderer.invoke('app:getHolidays', year, month),
 
   // --- 사용자 ---
   getUsers: (opts) => ipcRenderer.invoke('db:getUsers', opts),
@@ -73,9 +74,11 @@ contextBridge.exposeInMainWorld('api', {
   getUserStatistics: () => ipcRenderer.invoke('db:getUserStatistics'),
   getMonthlyStats: (ym) => ipcRenderer.invoke('db:getMonthlyStats', ym),
   getMonthlyDetailStats: (ym) => ipcRenderer.invoke('db:getMonthlyDetailStats', ym),
+  getPeriodDetailStats: (s, e) => ipcRenderer.invoke('db:getPeriodDetailStats', s, e),
   getPeriodStats: (s, e) => ipcRenderer.invoke('db:getPeriodStats', s, e),
   getDailyRangeStats: (s, e) => ipcRenderer.invoke('db:getDailyRangeStats', s, e),
   getAllUsersWeekdayUsage: (s, e) => ipcRenderer.invoke('db:getAllUsersWeekdayUsage', s, e),
+  getOperatingDays: (s, e) => ipcRenderer.invoke('db:getOperatingDays', s, e),
   getDeletedUsers: (s) => ipcRenderer.invoke('db:getDeletedUsers', s),
   purgeUser: (userId) => ipcRenderer.invoke('db:purgeUser', userId),
 
@@ -87,6 +90,10 @@ contextBridge.exposeInMainWorld('api', {
   // --- 메일 ---
   sendMail: (opts) => ipcRenderer.invoke('mail:send', opts),
   testMail: () => ipcRenderer.invoke('mail:test'),
+
+  // --- 앱 종료 ---
+  onCloseRequested: (cb) => ipcRenderer.on('app:close-requested', () => cb()),
+  confirmClose: (action) => ipcRenderer.send('app:close-confirmed', action),
 
   // --- 다이얼로그 ---
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
