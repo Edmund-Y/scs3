@@ -429,6 +429,171 @@ ipcMain.handle('dialog:showMessage', async (_, options) => {
   return result.response;
 });
 
+// --- 파일 선택 다이얼로그 ---
+ipcMain.handle('dialog:selectFile', async (_, options = {}) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    title: options.title || '파일 선택',
+    filters: options.filters || [{ name: 'SQLite Database', extensions: ['db'] }],
+  });
+  return result.canceled ? null : result.filePaths[0];
+});
+
+// --- 레거시 DB 마이그레이션 ---
+ipcMain.handle('db:migrateLegacy', async (_, legacyDbPath) => {
+  let backupPath;
+  try {
+    if (!fs.existsSync(legacyDbPath)) {
+      return { success: false, message: '레거시 DB 파일을 찾을 수 없습니다.' };
+    }
+    if (!db || !db.db) {
+      return { success: false, message: '현재 데이터베이스가 초기화되지 않았습니다.' };
+    }
+
+    const initSqlJs = require('sql.js');
+    const SQL = await initSqlJs();
+
+    // 1. 레거시 DB 열기
+    const legacyBuffer = fs.readFileSync(legacyDbPath);
+    const legacyDb = new SQL.Database(legacyBuffer);
+
+    // 2. 현재 DB 백업
+    const backupDir = path.join(path.dirname(db.dbPath), 'backups');
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    backupPath = path.join(backupDir, `users_pre_migration_${timestamp}.db`);
+    fs.copyFileSync(db.dbPath, backupPath);
+    logger.info(`마이그레이션 백업 생성: ${backupPath}`);
+
+    // 헬퍼: legacyDb에서 쿼리
+    function legacyQueryAll(sql) {
+      const stmt = legacyDb.prepare(sql);
+      const results = [];
+      while (stmt.step()) results.push(stmt.getAsObject());
+      stmt.free();
+      return results;
+    }
+
+    // 3. 현재 DB 테이블 재생성 (레거시 스키마와 다를 수 있으므로 DROP 후 재생성)
+    db.db.run('DROP TABLE IF EXISTS user_special_remarks');
+    db.db.run('DROP TABLE IF EXISTS special_remarks');
+    db.db.run('DROP TABLE IF EXISTS events');
+    db.db.run('DROP TABLE IF EXISTS cards');
+    db.db.run('DROP TABLE IF EXISTS users');
+    await db.createTables();
+    // createTables inserts TICKET user and default settings; clear users for clean import
+    db.db.run('DELETE FROM users');
+
+    // 4. users 복사 (old_id → new_id 매핑)
+    const legacyUsers = legacyQueryAll('SELECT * FROM users');
+    const userIdMap = {};
+    let userCount = 0;
+    for (const u of legacyUsers) {
+      db.db.run(
+        `INSERT INTO users (number, name, notes, status, deleted_at, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [u.number, u.name, u.notes || null, u.status || 'active', u.deleted_at || null, u.created_at || null]
+      );
+      const newId = db._queryOne('SELECT last_insert_rowid() as id').id;
+      userIdMap[u.id] = newId;
+      userCount++;
+    }
+
+    // 5. cards 복사
+    const legacyCards = legacyQueryAll('SELECT * FROM cards');
+    let cardCount = 0;
+    for (const c of legacyCards) {
+      const newUserId = userIdMap[c.user_id];
+      if (!newUserId) continue;
+      db.db.run(
+        `INSERT INTO cards (user_id, card_number, is_active, issued_at, deactivated_at, reissue_reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [newUserId, c.card_number, c.is_active != null ? c.is_active : 1, c.issued_at || null, c.deactivated_at || null, c.reissue_reason || null, c.created_at || c.issued_at || null]
+      );
+      cardCount++;
+    }
+
+    // 6. events 복사 (previous_menu 무시)
+    const legacyEvents = legacyQueryAll('SELECT * FROM events');
+    let eventCount = 0;
+    for (const e of legacyEvents) {
+      const newUserId = userIdMap[e.user_id];
+      if (!newUserId) continue;
+      db.db.run(
+        `INSERT INTO events (user_id, event_type, menu_type, input_method, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [newUserId, e.event_type, e.menu_type || null, e.input_method || 'manual', e.notes || null, e.created_at || null]
+      );
+      eventCount++;
+    }
+
+    // 7. special_remarks 복사
+    let remarkCount = 0;
+    const remarkIdMap = {};
+    try {
+      const legacyRemarks = legacyQueryAll('SELECT * FROM special_remarks');
+      for (const r of legacyRemarks) {
+        db.db.run(
+          `INSERT INTO special_remarks (name, description, display_order, start_date, end_date, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [r.name, r.description || null, r.display_order || 0, r.start_date || null, r.end_date || null, r.is_active != null ? r.is_active : 1, r.created_at || null]
+        );
+        const newId = db._queryOne('SELECT last_insert_rowid() as id').id;
+        remarkIdMap[r.id] = newId;
+        remarkCount++;
+      }
+    } catch (e) { /* 레거시에 테이블이 없을 수 있음 */ }
+
+    // 8. user_special_remarks 복사
+    let userRemarkCount = 0;
+    try {
+      const legacyUserRemarks = legacyQueryAll('SELECT * FROM user_special_remarks');
+      for (const ur of legacyUserRemarks) {
+        const newUserId = userIdMap[ur.user_id];
+        const newRemarkId = remarkIdMap[ur.remark_id];
+        if (!newUserId || !newRemarkId) continue;
+        db.db.run(
+          `INSERT INTO user_special_remarks (user_id, remark_id, created_at) VALUES (?, ?, ?)`,
+          [newUserId, newRemarkId, ur.created_at || null]
+        );
+        userRemarkCount++;
+      }
+    } catch (e) { /* 레거시에 테이블이 없을 수 있음 */ }
+
+    // 9. TICKET 사용자 재생성
+    const ticketUser = db._queryOne(`SELECT id FROM users WHERE number = 'TICKET'`);
+    if (!ticketUser) {
+      db.db.run(`INSERT INTO users (number, name, notes) VALUES ('TICKET', '식권구매', '시스템 사용자 - 당일 식권 체크인을 위한 익명 계정')`);
+    }
+
+    // 저장
+    db._save();
+
+    legacyDb.close();
+
+    const result = {
+      success: true,
+      message: '마이그레이션 완료',
+      stats: { users: userCount, cards: cardCount, events: eventCount, remarks: remarkCount, userRemarks: userRemarkCount },
+      backupPath,
+    };
+    logger.info(`레거시 DB 마이그레이션 완료: ${JSON.stringify(result.stats)}`);
+    return result;
+  } catch (err) {
+    logger.error(`레거시 DB 마이그레이션 실패: ${err.message}`);
+    // 실패 시 백업에서 복원
+    if (backupPath && fs.existsSync(backupPath)) {
+      try {
+        const backupBuffer = fs.readFileSync(backupPath);
+        db.db.close();
+        const SQL = await require('sql.js')();
+        db.db = new SQL.Database(backupBuffer);
+        db._save();
+        logger.info('마이그레이션 실패 → 백업에서 복원 완료');
+      } catch (restoreErr) {
+        logger.error(`백업 복원 실패: ${restoreErr.message}`);
+      }
+    }
+    return { success: false, message: err.message };
+  }
+});
+
 // --- 초기 설정 ---
 ipcMain.handle('setup:createDatabase', async (_, basePath) => {
   try {

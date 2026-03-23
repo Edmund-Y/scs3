@@ -97,6 +97,10 @@ contextBridge.exposeInMainWorld('api', {
 
   // --- 다이얼로그 ---
   selectFolder: () => ipcRenderer.invoke('dialog:selectFolder'),
+  selectFile: (options) => ipcRenderer.invoke('dialog:selectFile', options),
+
+  // --- 마이그레이션 ---
+  migrateLegacyDB: (dbPath) => ipcRenderer.invoke('db:migrateLegacy', dbPath),
   showError: (t, m) => ipcRenderer.invoke('dialog:showError', t, m),
   showMessage: (o) => ipcRenderer.invoke('dialog:showMessage', o),
 

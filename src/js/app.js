@@ -2855,6 +2855,11 @@ class SettingsPage {
         desc: '로그 기록 및 보관 설정',
         keys: ['log_level', 'log_retention_days'],
       },
+      {
+        id: 'migration', icon: '📦', name: '데이터 이전', color: '#e879f9',
+        desc: '과거 버전 데이터를 현재 버전으로 이전',
+        keys: [],
+      },
     ];
 
     const meta = {
@@ -2989,7 +2994,7 @@ class SettingsPage {
           <span class="s-nav-item-icon" style="background: ${g.color}15; color: ${g.color};">${g.icon}</span>
           <div class="s-nav-item-text">
             <span class="s-nav-item-name">${g.name}</span>
-            <span class="s-nav-item-count">${count}</span>
+            ${count > 0 ? `<span class="s-nav-item-count">${count}</span>` : ''}
           </div>
         </div>
       `;
@@ -3016,6 +3021,13 @@ class SettingsPage {
     });
 
     const content = document.getElementById('settingsContent');
+
+    // 마이그레이션 그룹: 커스텀 UI
+    if (groupId === 'migration') {
+      this._renderMigrationUI(content, group);
+      return;
+    }
+
     const emailInfo = groupId === 'email' ? `
       <div style="background:var(--bg-medium);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--text-secondary);line-height:1.8;">
         <strong style="color:var(--text-primary);">📧 이메일 설정 안내</strong><br>
@@ -3143,6 +3155,109 @@ class SettingsPage {
     html += '</div></div>';
     content.innerHTML = html;
     this._bindHandlers(content);
+  }
+
+  _renderMigrationUI(content, group) {
+    const defaultPath = 'C:\\Users\\' + (navigator.userAgent.includes('Windows') ? '' : '') + 'dongyoun Lee\\AppData\\Roaming\\경로식당\\Data\\users.db';
+    content.innerHTML = `
+      <div class="s-panel">
+        <div class="s-panel-header">
+          <div class="s-panel-icon" style="background: ${group.color}15; color: ${group.color};">${group.icon}</div>
+          <div>
+            <h2 class="s-panel-title">${group.name}</h2>
+            <p class="s-panel-desc">${group.desc}</p>
+          </div>
+        </div>
+        <div class="s-panel-body">
+          <div style="background:var(--error, #ef4444)15;border:1px solid var(--error, #ef4444)40;border-radius:var(--radius-sm);padding:14px 18px;margin-bottom:20px;font-size:13px;color:var(--text-secondary);line-height:1.7;">
+            <strong style="color:var(--error, #ef4444);">⚠️ 주의</strong><br>
+            마이그레이션을 실행하면 <strong>현재 데이터가 모두 삭제</strong>되고 과거 버전 데이터로 교체됩니다.<br>
+            실행 전 자동으로 백업이 생성되지만, 중요한 데이터가 있다면 먼저 수동 백업을 권장합니다.
+          </div>
+
+          <div class="s-row" style="align-items:center;">
+            <div class="s-row-info" style="flex:1;">
+              <span class="s-row-label">레거시 DB 파일 경로</span>
+              <span class="s-row-desc">과거 버전(경로식당)의 users.db 파일을 선택하세요</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin:12px 0 20px;">
+            <input type="text" id="migrationDbPath" value="${defaultPath}" readonly
+              style="flex:1;padding:8px 12px;background:var(--bg-medium);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);font-size:13px;" />
+            <button id="migrationSelectFile" class="btn" style="padding:8px 16px;background:var(--bg-light);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-primary);white-space:nowrap;">파일 선택</button>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:12px;margin-top:8px;">
+            <button id="migrationStartBtn" class="btn" style="padding:10px 24px;background:var(--accent-cyan);color:#000;border:none;border-radius:var(--radius-sm);font-weight:600;font-size:14px;">마이그레이션 시작</button>
+            <span id="migrationStatus" style="font-size:13px;color:var(--text-muted);"></span>
+          </div>
+
+          <div id="migrationResult" style="margin-top:20px;display:none;background:var(--bg-medium);border-radius:var(--radius-sm);padding:16px;font-size:13px;line-height:1.8;"></div>
+        </div>
+      </div>
+    `;
+
+    // 파일 선택 버튼
+    document.getElementById('migrationSelectFile').addEventListener('click', async () => {
+      const filePath = await window.api.selectFile({ title: '레거시 DB 파일 선택', filters: [{ name: 'SQLite Database', extensions: ['db'] }] });
+      if (filePath) {
+        document.getElementById('migrationDbPath').value = filePath;
+      }
+    });
+
+    // 마이그레이션 시작 버튼
+    document.getElementById('migrationStartBtn').addEventListener('click', async () => {
+      const dbPath = document.getElementById('migrationDbPath').value;
+      if (!dbPath) return;
+
+      // 확인 다이얼로그
+      const confirmed = await window.api.showMessage({
+        type: 'warning',
+        title: '데이터 마이그레이션',
+        message: '현재 데이터가 모두 삭제되고 과거 데이터로 교체됩니다.\n정말 진행하시겠습니까?',
+        buttons: ['취소', '마이그레이션 실행'],
+        defaultId: 0,
+        cancelId: 0,
+      });
+      if (confirmed !== 1) return;
+
+      const btn = document.getElementById('migrationStartBtn');
+      const status = document.getElementById('migrationStatus');
+      const resultDiv = document.getElementById('migrationResult');
+
+      btn.disabled = true;
+      btn.textContent = '진행 중...';
+      status.textContent = '마이그레이션 진행 중... 잠시 기다려주세요.';
+      status.style.color = 'var(--text-muted)';
+      resultDiv.style.display = 'none';
+
+      try {
+        const res = await window.api.migrateLegacyDB(dbPath);
+        if (res.success) {
+          status.textContent = '✅ 마이그레이션 완료!';
+          status.style.color = 'var(--success, #22c55e)';
+          resultDiv.style.display = 'block';
+          resultDiv.innerHTML = `
+            <strong style="color:var(--text-primary);">마이그레이션 결과</strong><br><br>
+            👤 사용자: <strong>${res.stats.users}</strong>명<br>
+            💳 카드: <strong>${res.stats.cards}</strong>건<br>
+            📋 이벤트: <strong>${res.stats.events}</strong>건<br>
+            📌 특이사항: <strong>${res.stats.remarks}</strong>건<br>
+            🔗 사용자-특이사항: <strong>${res.stats.userRemarks}</strong>건<br><br>
+            <span style="color:var(--text-muted);">백업 위치: ${res.backupPath}</span>
+          `;
+        } else {
+          status.textContent = `❌ 실패: ${res.message}`;
+          status.style.color = 'var(--error, #ef4444)';
+        }
+      } catch (e) {
+        status.textContent = `❌ 오류: ${e.message}`;
+        status.style.color = 'var(--error, #ef4444)';
+      }
+
+      btn.disabled = false;
+      btn.textContent = '마이그레이션 시작';
+    });
   }
 
   _renderSettingRows(keys, meta) {
