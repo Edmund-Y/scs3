@@ -23,6 +23,7 @@ let db = null;
 let config = null;
 let settings = null;
 let logger = null;
+let forceClose = false;
 
 // ==================== 시리얼 카드 리더기 ====================
 let serialPort = null;
@@ -164,7 +165,6 @@ function createWindow() {
   });
 
   // 종료 확인 모달 지원
-  let forceClose = false;
 
   mainWindow.on('close', (e) => {
     if (!forceClose) {
@@ -191,8 +191,8 @@ async function initializeApp() {
   // 1. 설정 관리자 초기화 (AppData config.json)
   config = new ConfigManager();
 
-  // 패키징된 앱인 경우 설치 경로를 데이터 경로로 자동 설정
-  if (app.isPackaged) {
+  // 패키징된 앱인 경우: 기존 basePath가 없을 때만 설치 경로를 데이터 경로로 설정
+  if (app.isPackaged && !config.getBasePath()) {
     const installDir = path.dirname(process.execPath);
     config.saveBasePath(installDir);
   }
@@ -829,6 +829,7 @@ function setupAutoUpdater() {
       if (response === 0) {
         stopCardReader();
         if (db) db.close();
+        forceClose = true; // 종료 확인 모달 우회
         autoUpdater.quitAndInstall();
       }
     });
