@@ -226,15 +226,15 @@ class App {
         return;
       }
 
-      const sendBtn = overlay.querySelector('#closeEmailSend');
-      sendBtn.disabled = true;
-      sendBtn.textContent = '발송 중...';
-      errorEl.style.display = 'none';
+      const pid = this.showProgress('이메일 발송 후 종료');
+      overlay.remove();
 
       try {
-        // 오늘의 이용 현황 데이터 가져오기
+        this.updateProgress(pid, { step: '첨부파일 생성 중...', percent: 15 });
         const events = await window.api.getTodayEvents();
         const attachment = this._buildTodayAttachment(events);
+
+        this.updateProgress(pid, { step: '메일 서버 연결 중...', percent: 40, detail: to });
 
         const res = await window.api.sendMail({
           to,
@@ -245,19 +245,18 @@ class App {
         });
 
         if (res.success) {
-          overlay.remove();
-          window.api.confirmClose('quit');
+          this.updateProgress(pid, { step: '발송 완료! 종료 중...', percent: 100 });
+          setTimeout(() => {
+            this.hideProgress(pid);
+            window.api.confirmClose('quit');
+          }, 800);
         } else {
-          errorEl.textContent = `발송 실패: ${res.message}`;
-          errorEl.style.display = 'block';
-          sendBtn.disabled = false;
-          sendBtn.textContent = '발송 후 종료';
+          this.hideProgress(pid);
+          this.showToast(`발송 실패: ${res.message}`, 'error', 5000);
         }
       } catch (e) {
-        errorEl.textContent = `오류: ${e.message}`;
-        errorEl.style.display = 'block';
-        sendBtn.disabled = false;
-        sendBtn.textContent = '발송 후 종료';
+        this.hideProgress(pid);
+        this.showToast(`메일 발송 오류: ${e.message}`, 'error', 5000);
       }
     };
   }
@@ -284,6 +283,46 @@ class App {
     }
     const BOM = '\uFEFF';
     return { data: BOM + aoa.map(row => row.join(',')).join('\n'), type: 'csv' };
+  }
+
+  showProgress(title) {
+    const id = 'progress-' + Date.now();
+    const overlay = document.createElement('div');
+    overlay.className = 'progress-overlay';
+    overlay.id = id;
+    overlay.innerHTML = `
+      <div class="progress-card">
+        <div class="spinner"></div>
+        <div class="progress-title">${title}</div>
+        <div class="progress-step"></div>
+        <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+        <div class="progress-detail"></div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    return id;
+  }
+
+  updateProgress(id, { step, percent, detail } = {}) {
+    const overlay = document.getElementById(id);
+    if (!overlay) return;
+    if (step !== undefined) {
+      const el = overlay.querySelector('.progress-step');
+      if (el) el.textContent = step;
+    }
+    if (percent !== undefined) {
+      const el = overlay.querySelector('.progress-bar-fill');
+      if (el) el.style.width = percent + '%';
+    }
+    if (detail !== undefined) {
+      const el = overlay.querySelector('.progress-detail');
+      if (el) el.textContent = detail;
+    }
+  }
+
+  hideProgress(id) {
+    const overlay = document.getElementById(id);
+    if (overlay) overlay.remove();
   }
 
   showToast(message, type = 'success', duration = 3000) {
@@ -2791,11 +2830,28 @@ class DashboardPage {
   }
 
   async _downloadCSV() {
-    const wbInfo = await this._getWorkbookData();
-    if (!wbInfo) return;
-
+    const pid = app.showProgress('엑셀 파일 생성');
     try {
-      const wbout = await this._buildWorkbookInWorker(wbInfo.type, wbInfo.data);
+      app.updateProgress(pid, { step: '데이터 준비 중...', percent: 10 });
+      const wbInfo = await this._getWorkbookData();
+      if (!wbInfo) { app.hideProgress(pid); return; }
+
+      app.updateProgress(pid, { step: '워크북 생성 중...', percent: 40 });
+
+      let wbout;
+      try {
+        wbout = await this._buildWorkbookInWorker(wbInfo.type, wbInfo.data);
+      } catch (e) {
+        console.warn('XLSX Worker failed, falling back:', e);
+        app.updateProgress(pid, { step: '워크북 생성 중... (폴백)', percent: 50 });
+        const wb = this._mode === 'monthly'
+          ? await this._buildMonthlyWorkbook()
+          : this._buildWeeklyWorkbook();
+        if (!wb) { app.hideProgress(pid); return; }
+        wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      }
+
+      app.updateProgress(pid, { step: '파일 저장 중...', percent: 85 });
       const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -2803,21 +2859,15 @@ class DashboardPage {
       a.download = `이용현황_${this._label}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
+
+      app.updateProgress(pid, { step: '완료!', percent: 100 });
+      setTimeout(() => {
+        app.hideProgress(pid);
+        app.showToast('엑셀 다운로드 완료', 'success');
+      }, 500);
     } catch (e) {
-      // Worker 실패 시 폴백
-      console.warn('XLSX Worker failed, falling back:', e);
-      const wb = this._mode === 'monthly'
-        ? await this._buildMonthlyWorkbook()
-        : this._buildWeeklyWorkbook();
-      if (!wb) return;
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `이용현황_${this._label}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
+      app.hideProgress(pid);
+      app.showToast('엑셀 생성 오류: ' + e.message, 'error');
     }
   }
 
@@ -2897,19 +2947,20 @@ class DashboardPage {
         return;
       }
 
-      const attachment = await this._buildAttachment();
-      if (!attachment) {
-        errorEl.textContent = '통계 데이터가 없습니다.';
-        errorEl.style.display = 'block';
-        return;
-      }
-
-      const sendBtn = overlay.querySelector('#emailSend');
-      sendBtn.disabled = true;
-      sendBtn.textContent = '발송 중...';
-      errorEl.style.display = 'none';
+      const pid = app.showProgress('이메일 발송');
+      cleanup(); // 이메일 모달 닫기
 
       try {
+        app.updateProgress(pid, { step: '첨부파일 생성 중...', percent: 15 });
+        const attachment = await this._buildAttachment();
+        if (!attachment) {
+          app.hideProgress(pid);
+          app.showToast('통계 데이터가 없습니다.', 'error');
+          return;
+        }
+
+        app.updateProgress(pid, { step: '메일 서버 연결 중...', percent: 45, detail: to });
+
         const res = await window.api.sendMail({
           to,
           subject,
@@ -2917,20 +2968,20 @@ class DashboardPage {
           attachment,
           attachmentFilename: `이용현황_${this._label || 'data'}`,
         });
+
         if (res.success) {
-          cleanup();
-          app.showToast('이메일 발송 완료!', 'success');
+          app.updateProgress(pid, { step: '발송 완료!', percent: 100 });
+          setTimeout(() => {
+            app.hideProgress(pid);
+            app.showToast('이메일 발송 완료!', 'success');
+          }, 500);
         } else {
-          errorEl.textContent = `발송 실패: ${res.message}`;
-          errorEl.style.display = 'block';
-          sendBtn.disabled = false;
-          sendBtn.textContent = '발송';
+          app.hideProgress(pid);
+          app.showToast(`발송 실패: ${res.message}`, 'error', 5000);
         }
       } catch (e) {
-        errorEl.textContent = `오류: ${e.message}`;
-        errorEl.style.display = 'block';
-        sendBtn.disabled = false;
-        sendBtn.textContent = '발송';
+        app.hideProgress(pid);
+        app.showToast(`메일 발송 오류: ${e.message}`, 'error', 5000);
       }
     };
 
