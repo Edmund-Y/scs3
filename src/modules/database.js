@@ -14,6 +14,8 @@ class DatabaseManager {
     this.logger = logger;
     this.db = null;
     this.sqljs = null;
+    this._saveTimer = null;
+    this._savePending = false;
   }
 
   async initialize() {
@@ -29,6 +31,20 @@ class DatabaseManager {
   }
 
   _save() {
+    this._savePending = true;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._flushSave();
+    }, 2000);
+  }
+
+  _flushSave() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (!this._savePending || !this.db) return;
+    this._savePending = false;
     const data = this.db.export();
     const buffer = Buffer.from(data);
     const dir = path.dirname(this.dbPath);
@@ -43,6 +59,7 @@ class DatabaseManager {
       this.db.run('CREATE INDEX IF NOT EXISTS idx_cards_user_active ON cards(user_id, deactivated_at)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_cards_issued_at ON cards(issued_at)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_events_date_type_user ON events(created_at, event_type, user_id)');
     } catch (e) {
       // 테이블이 아직 없을 수 있음 (최초 실행)
     }
@@ -50,7 +67,7 @@ class DatabaseManager {
 
   close() {
     if (this.db) {
-      this._save();
+      this._flushSave();
       this.db.close();
       this.db = null;
     }
@@ -643,10 +660,12 @@ class DatabaseManager {
 
       if (recentCheckin) {
         console.log(`[DB:checkIn] ${duplicateWindowMinutes}분 이내 중복 시도 차단: userId=${userId}`);
+        const today = this._kstToday();
         const countRow = this._queryOne(`
           SELECT COUNT(*) as count FROM events
-          WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')
-        `, [userId]);
+          WHERE user_id = ? AND event_type = 'check_in'
+          AND created_at BETWEEN ? AND ?
+        `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
         return { success: true, count: countRow ? countRow.count : 1, isRecentDuplicate: true, duplicateWindowMinutes, message: `${duplicateWindowMinutes}분 이내 중복입니다.` };
       }
 
@@ -668,10 +687,12 @@ class DatabaseManager {
       `, [newId]);
 
       // 오늘 이 사용자의 체크인 횟수
+      const today = this._kstToday();
       const countRow = this._queryOne(`
         SELECT COUNT(*) as count FROM events
-        WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')
-      `, [userId]);
+        WHERE user_id = ? AND event_type = 'check_in'
+        AND created_at BETWEEN ? AND ?
+      `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
 
       const count = countRow ? countRow.count : 1;
       console.log(`[DB:checkIn] 성공 - count=${count}`);
@@ -692,7 +713,8 @@ class DatabaseManager {
       this._run(`INSERT INTO events (user_id, event_type, menu_type, input_method) VALUES (?, 'check_in', '식권', 'ticket')`, [ticketUser.id]);
       const insertRow = this._queryOne(`SELECT last_insert_rowid() as id`);
       const eventInfo = this._queryOne(`SELECT e.*, u.number, u.name FROM events e JOIN users u ON e.user_id = u.id WHERE e.id = ?`, [insertRow.id]);
-      const countRow = this._queryOne(`SELECT COUNT(*) as count FROM events WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')`, [ticketUser.id]);
+      const today = this._kstToday();
+      const countRow = this._queryOne(`SELECT COUNT(*) as count FROM events WHERE user_id = ? AND event_type = 'check_in' AND created_at BETWEEN ? AND ?`, [ticketUser.id, today + ' 00:00:00', today + ' 23:59:59']);
       return { success: true, count: countRow ? countRow.count : 1, event: eventInfo };
     } catch (e) {
       return { success: false, message: e.message };
@@ -703,12 +725,13 @@ class DatabaseManager {
     try {
       const ticketUser = this._queryOne(`SELECT id FROM users WHERE number = 'TICKET'`);
       if (!ticketUser) return { success: false, message: '식권 사용자를 찾을 수 없습니다.' };
+      const today = this._kstToday();
       const lastEvent = this._queryOne(`
         SELECT id FROM events
         WHERE user_id = ? AND event_type = 'check_in' AND input_method = 'ticket'
-          AND DATE(created_at) = DATE('now','localtime')
+          AND created_at BETWEEN ? AND ?
         ORDER BY id DESC LIMIT 1
-      `, [ticketUser.id]);
+      `, [ticketUser.id, today + ' 00:00:00', today + ' 23:59:59']);
       if (!lastEvent) return { success: false, message: '취소할 식권 기록이 없습니다.' };
       this._run(`UPDATE events SET event_type = 'cancel' WHERE id = ?`, [lastEvent.id]);
       return { success: true };
@@ -719,10 +742,12 @@ class DatabaseManager {
 
   cancelCheckIn(userId) {
     try {
+      const today = this._kstToday();
       this._run(`
         UPDATE events SET event_type = 'cancel'
-        WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')
-      `, [userId]);
+        WHERE user_id = ? AND event_type = 'check_in'
+        AND created_at BETWEEN ? AND ?
+      `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
       return { success: true, message: '체크인 취소 성공' };
     } catch (e) {
       return { success: false, message: `체크인 취소 실패: ${e.message}` };
@@ -756,13 +781,14 @@ class DatabaseManager {
 
       // 2. 해당 유저의 오늘자 모든 check_in 이벤트를 취소 처리
       console.log(`[DB:cancelEventById] 당일 전체 취소 진행: userId=${userId}`);
+      const today = this._kstToday();
       this._run(`
         UPDATE events
         SET event_type = 'cancel'
         WHERE user_id = ?
           AND event_type = 'check_in'
-          AND DATE(created_at) = DATE('now','localtime')
-      `, [userId]);
+          AND created_at BETWEEN ? AND ?
+      `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
 
       console.log(`[DB:cancelEventById] 당일 전체 취소 성공`);
       return { success: true, message: '당일 전체 취소 성공' };
@@ -786,26 +812,28 @@ class DatabaseManager {
 
   getDailyStats() {
     const today = this._kstToday();
+    const dayStart = today + ' 00:00:00';
+    const dayEnd = today + ' 23:59:59';
     console.log(`[DB:getDailyStats] today=${today}`);
     const row = this._queryOne(`
       WITH user_final_menu AS (
         SELECT user_id, input_method,
           (SELECT menu_type FROM events e2
            WHERE e2.user_id = e.user_id AND e2.event_type = 'check_in' AND e2.input_method != 'ticket'
-           AND DATE(e2.created_at) = ? ORDER BY e2.created_at ASC LIMIT 1) as final_menu
+           AND e2.created_at BETWEEN ? AND ? ORDER BY e2.created_at ASC LIMIT 1) as final_menu
         FROM events e
-        WHERE DATE(e.created_at) = ? AND event_type = 'check_in' AND input_method != 'ticket'
+        WHERE e.created_at BETWEEN ? AND ? AND event_type = 'check_in' AND input_method != 'ticket'
         GROUP BY user_id
         UNION ALL
         SELECT user_id, input_method, 'ticket' as final_menu
-        FROM events WHERE DATE(created_at) = ? AND event_type = 'check_in' AND input_method = 'ticket'
+        FROM events WHERE created_at BETWEEN ? AND ? AND event_type = 'check_in' AND input_method = 'ticket'
       )
       SELECT COUNT(*) as total,
         SUM(CASE WHEN final_menu = '일반식' THEN 1 ELSE 0 END) as normal,
         SUM(CASE WHEN final_menu = '죽식' THEN 1 ELSE 0 END) as porridge,
         SUM(CASE WHEN final_menu = 'ticket' THEN 1 ELSE 0 END) as ticket
       FROM user_final_menu
-    `, [today, today, today]);
+    `, [dayStart, dayEnd, dayStart, dayEnd, dayStart, dayEnd]);
     console.log(`[DB:getDailyStats] result=`, JSON.stringify(row));
     return row || { total: 0, normal: 0, porridge: 0, ticket: 0 };
   }
@@ -829,10 +857,12 @@ class DatabaseManager {
   }
 
   getUserTodayCount(userId) {
+    const today = this._kstToday();
     const row = this._queryOne(`
       SELECT COUNT(*) as count FROM events
-      WHERE user_id = ? AND event_type = 'check_in' AND DATE(created_at) = DATE('now','localtime')
-    `, [userId]);
+      WHERE user_id = ? AND event_type = 'check_in'
+      AND created_at BETWEEN ? AND ?
+    `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
     return row ? row.count : 0;
   }
 

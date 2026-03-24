@@ -3,7 +3,7 @@
  * Electron 메인 프로세스
  */
 
-const { app, BrowserWindow, ipcMain, dialog, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, safeStorage, utilityProcess } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const fs = require('fs');
@@ -621,7 +621,7 @@ ipcMain.handle('setup:createDatabase', async (_, basePath) => {
   }
 });
 
-// ==================== 메일 발송 IPC ====================
+// ==================== 메일 발송 IPC (utilityProcess) ====================
 
 const SMTP_PROVIDERS = {
   gmail: { host: 'smtp.gmail.com', port: 587, secure: false },
@@ -637,22 +637,51 @@ function getSmtpConfig() {
   return { ...smtp, user, pass };
 }
 
+let mailWorker = null;
+let mailReqId = 0;
+const mailCallbacks = new Map();
+
+function getMailWorker() {
+  if (mailWorker && !mailWorker.killed) return mailWorker;
+  mailWorker = utilityProcess.fork(path.join(__dirname, 'src', 'modules', 'mail-worker.js'));
+  mailWorker.on('message', (msg) => {
+    const cb = mailCallbacks.get(msg.id);
+    if (cb) {
+      mailCallbacks.delete(msg.id);
+      cb(msg);
+    }
+  });
+  mailWorker.on('exit', () => {
+    mailWorker = null;
+  });
+  return mailWorker;
+}
+
+function sendMailViaWorker(type, config, mailOptions) {
+  return new Promise((resolve) => {
+    const id = ++mailReqId;
+    mailCallbacks.set(id, resolve);
+    getMailWorker().postMessage({ type, id, config, mailOptions });
+    // 30초 타임아웃
+    setTimeout(() => {
+      if (mailCallbacks.has(id)) {
+        mailCallbacks.delete(id);
+        resolve({ success: false, message: '메일 발송 시간 초과 (30초)' });
+      }
+    }, 30000);
+  });
+}
+
 ipcMain.handle('mail:send', async (_, opts) => {
   try {
-    const nodemailer = require('nodemailer');
-    const { host, port, secure, user, pass } = getSmtpConfig();
+    const config = getSmtpConfig();
 
-    if (!user || !pass) {
+    if (!config.user || !config.pass) {
       return { success: false, message: 'SMTP 설정이 완료되지 않았습니다. 설정 페이지에서 이메일 정보를 입력하세요.' };
     }
 
-    const transporter = nodemailer.createTransport({
-      host, port, secure,
-      auth: { user, pass },
-    });
-
     const mailOptions = {
-      from: user,
+      from: config.user,
       to: opts.to,
       subject: opts.subject || '이용현황',
       text: opts.body || '',
@@ -661,17 +690,21 @@ ipcMain.handle('mail:send', async (_, opts) => {
           ? `${opts.attachmentFilename || 'data'}.xlsx`
           : `${opts.attachmentFilename || 'data'}.csv`,
         content: opts.attachment.type === 'xlsx'
-          ? Buffer.from(opts.attachment.data)
-          : Buffer.from(opts.attachment.data, 'utf-8'),
+          ? Array.from(opts.attachment.data)
+          : Array.from(Buffer.from(opts.attachment.data, 'utf-8')),
         contentType: opts.attachment.type === 'xlsx'
           ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
           : 'text/csv',
       }] : [],
     };
 
-    await transporter.sendMail(mailOptions);
-    logger.info(`메일 발송 성공: ${opts.to}`);
-    return { success: true };
+    const result = await sendMailViaWorker('send', config, mailOptions);
+    if (result.success) {
+      logger.info(`메일 발송 성공: ${opts.to}`);
+    } else {
+      logger.error(`메일 발송 실패: ${result.message}`);
+    }
+    return result;
   } catch (err) {
     logger.error(`메일 발송 실패: ${err.message}`);
     return { success: false, message: err.message };
@@ -680,24 +713,22 @@ ipcMain.handle('mail:send', async (_, opts) => {
 
 ipcMain.handle('mail:test', async () => {
   try {
-    const nodemailer = require('nodemailer');
-    const { host, port, secure, user, pass } = getSmtpConfig();
+    const config = getSmtpConfig();
 
-    logger.info(`SMTP 연결 테스트 시작 (host=${host}, port=${port}, user=${user})`);
+    logger.info(`SMTP 연결 테스트 시작 (host=${config.host}, port=${config.port}, user=${config.user})`);
 
-    if (!user || !pass) {
+    if (!config.user || !config.pass) {
       logger.warning('SMTP 연결 테스트 실패: 설정 미완료');
       return { success: false, message: 'SMTP 설정이 완료되지 않았습니다.' };
     }
 
-    const transporter = nodemailer.createTransport({
-      host, port, secure,
-      auth: { user, pass },
-    });
-
-    await transporter.verify();
-    logger.info('SMTP 연결 테스트 성공');
-    return { success: true };
+    const result = await sendMailViaWorker('test', config);
+    if (result.success) {
+      logger.info('SMTP 연결 테스트 성공');
+    } else {
+      logger.error(`SMTP 연결 테스트 실패: ${result.message}`);
+    }
+    return result;
   } catch (err) {
     logger.error(`SMTP 연결 테스트 실패: ${err.message}`);
     return { success: false, message: err.message };
@@ -833,6 +864,10 @@ app.whenReady().then(initializeApp);
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     stopCardReader();
+    if (mailWorker && !mailWorker.killed) {
+      mailWorker.kill();
+      mailWorker = null;
+    }
     if (db) {
       db.close();
     }

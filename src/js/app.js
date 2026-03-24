@@ -516,6 +516,7 @@ class CountPage {
     this._clockInterval = null;
     this._refreshInterval = null;
     this._lastScanDetails = new Map();
+    this._cachedSettings = null;
   }
 
   render() {
@@ -590,9 +591,10 @@ class CountPage {
   }
 
   async afterRender() {
-    // 런타임 설정 적용
+    // 런타임 설정 적용 + 캐싱
     try {
       const allSettings = await window.api.getAllSettings();
+      this._cachedSettings = allSettings;
       // 글꼴 크기 (CSS 변수 적용)
       const fsMap = {
         ui_fs_title: '--fs-title', ui_fs_subtitle: '--fs-subtitle',
@@ -788,7 +790,7 @@ class CountPage {
     if (remarksRow) cls += ' has-remarks';
 
     const html = `
-      <div class="${cls}">
+      <div class="${cls}" data-event-id="${event.id}">
         <span class="time">${time}</span>
         <span class="name">${isTicket ? '🎫 식권' : `${event.number || ''} ${event.name || ''}`}</span>
         <div class="badge-col">${badge}</div>
@@ -817,11 +819,11 @@ class CountPage {
       return;
     }
 
-    // 설정값 로드
+    // 설정값 (캐시 활용)
     let listMax = 50;
     let showNumber = true;
     try {
-      const allSettings = await window.api.getAllSettings();
+      const allSettings = this._cachedSettings || await window.api.getAllSettings();
       listMax = parseInt(allSettings.ui_usage_list_max || '50', 10) || 50;
       showNumber = allSettings.ui_show_user_number !== '0';
     } catch (e) { /* fallback */ }
@@ -874,7 +876,7 @@ class CountPage {
       if (remarksRow) cls += ' has-remarks';
 
       return `
-        <div class="${cls}">
+        <div class="${cls}" data-event-id="${event.id}">
           <span class="time">${time}</span>
           <span class="name">${nameDisplay}</span>
           <div class="badge-col">${badge}</div>
@@ -905,7 +907,25 @@ class CountPage {
         console.log(`[_changeMenu] API Result:`, result);
         if (result && result.success === false) throw new Error(result.message);
         app.showToast('메뉴가 변경되었습니다.', 'info');
-        await this._refreshData();
+
+        // 증분 DOM 업데이트: 해당 카드만 수정
+        const card = document.querySelector(`.usage-card[data-event-id="${eventId}"]`);
+        if (card) {
+          const badgeCol = card.querySelector('.badge-col');
+          if (badgeCol) {
+            badgeCol.innerHTML = newMenu === '죽식'
+              ? '<span class="badge badge-porridge">🍚 죽식</span>'
+              : '<span class="badge badge-normal">🍱 일반식</span>';
+          }
+          const nextMenu = newMenu === '죽식' ? '일반식' : '죽식';
+          const changeBtn = card.querySelector('[data-action="change-menu"]');
+          if (changeBtn) changeBtn.setAttribute('data-menu', nextMenu);
+        } else {
+          // 카드를 찾지 못하면 폴백으로 전체 리프레시
+          await this._refreshData();
+          return;
+        }
+        await this._updateStatsUIOnly();
       }
     } catch (e) {
       console.error(`[_changeMenu] 에러:`, e);
@@ -928,7 +948,22 @@ class CountPage {
         if (result && result.success === false) throw new Error(result.message);
         const toastMsg = isTicket ? '식권 1건이 취소되었습니다.' : '오늘자 전체 이용 기록이 취소되었습니다.';
         app.showToast(toastMsg, 'warning');
-        await this._refreshData();
+
+        if (isTicket) {
+          // 식권: 해당 카드만 제거
+          const card = document.querySelector(`.usage-card[data-event-id="${eventId}"]`);
+          if (card) {
+            card.remove();
+          } else {
+            await this._refreshData();
+            return;
+          }
+        } else {
+          // 일반 취소: 해당 사용자의 모든 오늘 이벤트가 삭제되므로 관련 카드 식별이 어려움 → 전체 리프레시
+          await this._refreshData();
+          return;
+        }
+        await this._updateStatsUIOnly();
       }
     } catch (e) {
       console.error(`[_cancelEvent] 에러:`, e);
@@ -992,7 +1027,7 @@ class CountPage {
   async _speak(text, { eventType = 'normal' } = {}) {
     if (!window.speechSynthesis) return;
     try {
-      const allSettings = await window.api.getAllSettings();
+      const allSettings = this._cachedSettings || await window.api.getAllSettings();
       // 마스터 TTS on/off
       if (allSettings.tts_enabled === '0' || allSettings.tts_enabled === 'false') return;
 
@@ -1030,7 +1065,7 @@ class CountPage {
   async _processCheckIn(userNumber) {
     try {
       console.log(`[CountPage] 체크인 시도: userNumber=${userNumber}`);
-      const allSettings = await window.api.getAllSettings();
+      const allSettings = this._cachedSettings || await window.api.getAllSettings();
       const autoClearMs = (parseFloat(allSettings.checkin_auto_clear_seconds || '3') * 1000);
 
       let user = await window.api.getUserByNumber(userNumber);
@@ -2311,6 +2346,48 @@ class DashboardPage {
     this._mode = 'monthly';
     this._lastRows = [];
     this._label = '';
+    this._xlsxWorker = null;
+    this._workerReqId = 0;
+    this._workerCallbacks = new Map();
+  }
+
+  _getXlsxWorker() {
+    if (!this._xlsxWorker) {
+      this._xlsxWorker = new Worker('./js/xlsx-worker.js');
+      this._xlsxWorker.onmessage = (e) => {
+        const { id, result, error } = e.data;
+        const cb = this._workerCallbacks.get(id);
+        if (cb) {
+          this._workerCallbacks.delete(id);
+          if (error) cb.reject(new Error(error));
+          else cb.resolve(result);
+        }
+      };
+    }
+    return this._xlsxWorker;
+  }
+
+  _buildWorkbookInWorker(type, data) {
+    return new Promise((resolve, reject) => {
+      const id = ++this._workerReqId;
+      this._workerCallbacks.set(id, { resolve, reject });
+      // Map → plain Object 변환
+      const serializedUserDateMap = {};
+      if (data.userDateMap instanceof Map) {
+        for (const [userId, dateMap] of data.userDateMap) {
+          serializedUserDateMap[userId] = {};
+          for (const [date, val] of dateMap) {
+            serializedUserDateMap[userId][date] = val;
+          }
+        }
+      } else {
+        Object.assign(serializedUserDateMap, data.userDateMap);
+      }
+      this._getXlsxWorker().postMessage({
+        id, type,
+        data: { ...data, userDateMap: serializedUserDateMap }
+      });
+    });
   }
 
   render() {
@@ -2666,30 +2743,101 @@ class DashboardPage {
     return wb;
   }
 
-  async _downloadCSV() {
-    const wb = this._mode === 'monthly'
-      ? await this._buildMonthlyWorkbook()
-      : this._buildWeeklyWorkbook();
-    if (!wb) return;
+  async _getWorkbookData() {
+    if (this._mode === 'monthly') {
+      return await this._getMonthlyWorkbookData();
+    }
+    // weekly: _lastRows에서 직접
+    if (!this._lastRows || !this._lastRows.weekdays) return null;
+    return { type: 'weekly', data: this._lastRows };
+  }
 
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `이용현황_${this._label}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(url);
+  async _getMonthlyWorkbookData() {
+    const yearMonth = document.getElementById('dashPicker')?.value;
+    if (!yearMonth) return null;
+    const [y, m] = yearMonth.split('-');
+
+    const [detailRows, activeUsers] = await Promise.all([
+      window.api.getMonthlyDetailStats(yearMonth),
+      window.api.searchUsers('', 'active')
+    ]);
+
+    const holidays = await window.api.getHolidays(+y, +m);
+    const holidaySet = new Set(holidays);
+    const lastDay = new Date(+y, +m, 0).getDate();
+    const weekdays = [];
+    for (let d = 1; d <= lastDay; d++) {
+      const dt = new Date(+y, +m - 1, d);
+      const dow = dt.getDay();
+      if (dow >= 1 && dow <= 5 && !holidaySet.has(d)) {
+        weekdays.push({ dateStr: `${yearMonth}-${String(d).padStart(2, '0')}`, day: d, dow });
+      }
+    }
+
+    const userDateMap = new Map();
+    for (const row of (detailRows || [])) {
+      if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+      const method = row.input_method === 'card' ? '카드' : '수동';
+      const cell = `${row.final_menu}(${method})`;
+      userDateMap.get(row.user_id).set(row.event_date, cell);
+    }
+
+    const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+      const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+      return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+    });
+
+    return { type: 'monthly', data: { weekdays, userDateMap, sortedUsers } };
+  }
+
+  async _downloadCSV() {
+    const wbInfo = await this._getWorkbookData();
+    if (!wbInfo) return;
+
+    try {
+      const wbout = await this._buildWorkbookInWorker(wbInfo.type, wbInfo.data);
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `이용현황_${this._label}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      // Worker 실패 시 폴백
+      console.warn('XLSX Worker failed, falling back:', e);
+      const wb = this._mode === 'monthly'
+        ? await this._buildMonthlyWorkbook()
+        : this._buildWeeklyWorkbook();
+      if (!wb) return;
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `이용현황_${this._label}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   }
 
   async _buildAttachment() {
-    const wb = this._mode === 'monthly'
-      ? await this._buildMonthlyWorkbook()
-      : this._buildWeeklyWorkbook();
-    if (!wb) return null;
+    const wbInfo = await this._getWorkbookData();
+    if (!wbInfo) return null;
 
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+    try {
+      const wbout = await this._buildWorkbookInWorker(wbInfo.type, wbInfo.data);
+      return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+    } catch (e) {
+      // Worker 실패 시 폴백
+      console.warn('XLSX Worker failed, falling back:', e);
+      const wb = this._mode === 'monthly'
+        ? await this._buildMonthlyWorkbook()
+        : this._buildWeeklyWorkbook();
+      if (!wb) return null;
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+    }
   }
 
   async _showEmailModal() {
