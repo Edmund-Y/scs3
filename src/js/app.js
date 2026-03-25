@@ -2386,6 +2386,7 @@ class DashboardPage {
     this._lastRows = [];
     this._label = '';
     this._xlsxWorker = null;
+    this._statsRenderWorker = null;
     this._workerReqId = 0;
     this._workerCallbacks = new Map();
   }
@@ -2404,6 +2405,33 @@ class DashboardPage {
       };
     }
     return this._xlsxWorker;
+  }
+
+  _getStatsRenderWorker() {
+    if (!this._statsRenderWorker) {
+      this._statsRenderWorker = new Worker('./js/stats-render-worker.js');
+      this._statsRenderWorker.onmessage = (e) => {
+        const { id, result, error } = e.data;
+        const cb = this._workerCallbacks.get(id);
+        if (cb) {
+          this._workerCallbacks.delete(id);
+          if (error) cb.reject(new Error(error));
+          else cb.resolve(result);
+        }
+      };
+    }
+    return this._statsRenderWorker;
+  }
+
+  _buildTableInWorker(detailRows, activeUsers, weekdays) {
+    return new Promise((resolve, reject) => {
+      const id = ++this._workerReqId;
+      this._workerCallbacks.set(id, { resolve, reject });
+      this._getStatsRenderWorker().postMessage({
+        id, type: 'buildTable',
+        data: { detailRows, activeUsers, weekdays }
+      });
+    });
   }
 
   _buildWorkbookInWorker(type, data) {
@@ -2525,15 +2553,29 @@ class DashboardPage {
     }
   }
 
+  _setLoadingControls(disabled) {
+    const picker = document.getElementById('dashPicker');
+    const modeM = document.getElementById('modeMonthly');
+    const modeW = document.getElementById('modeWeekly');
+    const dlBtn = document.getElementById('dashDownloadBtn');
+    const emBtn = document.getElementById('dashEmailBtn');
+    [picker, modeM, modeW, dlBtn, emBtn].forEach(el => { if (el) el.disabled = disabled; });
+  }
+
   async _loadTable() {
     const wrap = document.getElementById('statsTableWrap');
     const range = this._getDateRange();
     if (!range) return;
-    wrap.innerHTML = '<span style="color:var(--text-muted)">로딩 중...</span>';
+    wrap.innerHTML = `<div style="display:flex; align-items:center; gap:10px; padding:20px 0;">
+      <span class="stats-spinner"></span>
+      <span style="color:var(--text-muted)">통계 데이터를 불러오는 중...</span>
+    </div>`;
+    this._setLoadingControls(true);
     try {
+      let detailRows, activeUsers, weekdays;
       if (this._mode === 'monthly') {
         const yearMonth = document.getElementById('dashPicker').value;
-        const [detailRows, activeUsers] = await Promise.all([
+        [detailRows, activeUsers] = await Promise.all([
           window.api.getMonthlyDetailStats(yearMonth),
           window.api.searchUsers('', 'active')
         ]);
@@ -2542,7 +2584,7 @@ class DashboardPage {
         // 해당 월의 평일(월~금) 날짜 목록 계산
         const [y, m] = yearMonth.split('-');
         const lastDay = new Date(+y, +m, 0).getDate();
-        const weekdays = [];
+        weekdays = [];
         for (let d = 1; d <= lastDay; d++) {
           const dt = new Date(+y, +m - 1, d);
           const dow = dt.getDay();
@@ -2551,66 +2593,15 @@ class DashboardPage {
             weekdays.push({ dateStr, day: d, dow });
           }
         }
-
-        // detailRows를 Map<user_id, Map<event_date, cellValue>>로 그룹핑
-        const userDateMap = new Map();
-        for (const row of (detailRows || [])) {
-          if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
-          const method = row.input_method === 'card' ? '카드' : '수동';
-          const cell = `${row.final_menu}(${method})`;
-          userDateMap.get(row.user_id).set(row.event_date, cell);
-        }
-
-        // 모든 활성 사용자를 번호순 정렬
-        const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
-          const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
-          return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
-        });
-
-        // _lastRows 캐시 (XLSX 다운로드용)
-        this._lastRows = { weekdays, userDateMap, sortedUsers };
-
-        // 테이블 렌더링
-        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
-        const headerCells = weekdays.map(wd =>
-          `<th style="min-width:70px; text-align:center; font-size:12px; white-space:nowrap;">${wd.day}일(${dayNames[wd.dow]})</th>`
-        ).join('');
-
-        const bodyRows = sortedUsers.map(u => {
-          const dateMap = userDateMap.get(u.id) || new Map();
-          const cells = weekdays.map(wd => {
-            const val = dateMap.get(wd.dateStr);
-            if (val) return `<td style="text-align:center; font-size:11px; white-space:nowrap;">${val}</td>`;
-            return `<td style="text-align:center; color: var(--error); font-weight: bold;">X</td>`;
-          }).join('');
-          return `<tr><td style="text-align:center">${u.number}</td><td>${u.name}</td>${cells}</tr>`;
-        }).join('');
-
-        if (sortedUsers.length === 0) {
-          wrap.innerHTML = '<span style="color:var(--text-muted)">활성 사용자가 없습니다.</span>';
-          return;
-        }
-
-        wrap.innerHTML = `
-          <div style="overflow-x: auto;">
-            <table class="data-table" style="width: 100%;">
-              <thead><tr>
-                <th style="width:60px">번호</th><th style="width:80px">이름</th>${headerCells}
-              </tr></thead>
-              <tbody>${bodyRows}</tbody>
-            </table>
-          </div>
-        `;
       } else {
-        // weekly mode: 전체 사용자 × 평일 일별 테이블
-        const [detailRows, activeUsers] = await Promise.all([
+        // weekly mode
+        [detailRows, activeUsers] = await Promise.all([
           window.api.getPeriodDetailStats(range.start, range.end),
           window.api.searchUsers('', 'active')
         ]);
         this._label = range.label;
 
-        // 해당 주의 평일(월~금) 날짜 목록 계산
-        const weekdays = [];
+        weekdays = [];
         const startDt = new Date(range.start + 'T00:00:00');
         const endDt = new Date(range.end + 'T00:00:00');
         for (let dt = new Date(startDt); dt <= endDt; dt.setDate(dt.getDate() + 1)) {
@@ -2620,59 +2611,22 @@ class DashboardPage {
             weekdays.push({ dateStr, day: dt.getDate(), dow });
           }
         }
-
-        // detailRows를 Map<user_id, Map<event_date, cellValue>>로 그룹핑
-        const userDateMap = new Map();
-        for (const row of (detailRows || [])) {
-          if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
-          const method = row.input_method === 'card' ? '카드' : '수동';
-          const cell = `${row.final_menu}(${method})`;
-          userDateMap.get(row.user_id).set(row.event_date, cell);
-        }
-
-        // 모든 활성 사용자를 번호순 정렬
-        const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
-          const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
-          return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
-        });
-
-        // _lastRows 캐시 (다운로드용)
-        this._lastRows = { weekdays, userDateMap, sortedUsers };
-
-        if (sortedUsers.length === 0) {
-          wrap.innerHTML = '<span style="color:var(--text-muted)">활성 사용자가 없습니다.</span>';
-          return;
-        }
-
-        // 테이블 렌더링
-        const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
-        const headerCells = weekdays.map(wd =>
-          `<th style="min-width:70px; text-align:center; font-size:12px; white-space:nowrap;">${wd.day}일(${dayNames[wd.dow]})</th>`
-        ).join('');
-
-        const bodyRows = sortedUsers.map(u => {
-          const dateMap = userDateMap.get(u.id) || new Map();
-          const cells = weekdays.map(wd => {
-            const val = dateMap.get(wd.dateStr);
-            if (val) return `<td style="text-align:center; font-size:11px; white-space:nowrap;">${val}</td>`;
-            return `<td style="text-align:center; color: var(--error); font-weight: bold;">X</td>`;
-          }).join('');
-          return `<tr><td style="text-align:center">${u.number}</td><td>${u.name}</td>${cells}</tr>`;
-        }).join('');
-
-        wrap.innerHTML = `
-          <div style="overflow-x: auto;">
-            <table class="data-table" style="width: 100%;">
-              <thead><tr>
-                <th style="width:60px">번호</th><th style="width:80px">이름</th>${headerCells}
-              </tr></thead>
-              <tbody>${bodyRows}</tbody>
-            </table>
-          </div>
-        `;
       }
+
+      // Web Worker에서 데이터 가공 + HTML 생성
+      const result = await this._buildTableInWorker(detailRows, activeUsers, weekdays);
+      wrap.innerHTML = result.html;
+
+      // _lastRows 캐시 (XLSX 다운로드용) — plain object → Map 변환
+      const userDateMap = new Map();
+      for (const [userId, dateObj] of Object.entries(result.userDateMap || {})) {
+        userDateMap.set(Number(userId), new Map(Object.entries(dateObj)));
+      }
+      this._lastRows = { weekdays, userDateMap, sortedUsers: result.sortedUsers };
     } catch (e) {
       wrap.innerHTML = `<span style="color:var(--error)">오류: ${e.message}</span>`;
+    } finally {
+      this._setLoadingControls(false);
     }
   }
 

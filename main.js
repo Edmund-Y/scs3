@@ -352,11 +352,19 @@ ipcMain.handle('db:getUsersForRemark', (_, remarkId) => db.getUsersForRemark(rem
 ipcMain.handle('db:assignRemark', (_, userId, remarkId) => db.assignRemark(userId, remarkId));
 ipcMain.handle('db:unassignRemark', (_, userId, remarkId) => db.unassignRemark(userId, remarkId));
 
-// 통계
+// 통계 (무거운 쿼리는 stats-worker로 위임)
 ipcMain.handle('db:getUserStatistics', () => db.getUserStatistics());
 ipcMain.handle('db:getMonthlyStats', (_, yearMonth) => db.getMonthlyStats(yearMonth));
-ipcMain.handle('db:getMonthlyDetailStats', (_, yearMonth) => db.getMonthlyDetailStats(yearMonth));
-ipcMain.handle('db:getPeriodDetailStats', (_, startDate, endDate) => db.getPeriodDetailStats(startDate, endDate));
+ipcMain.handle('db:getMonthlyDetailStats', async (_, yearMonth) => {
+  const result = await queryStatsWorker('getMonthlyDetailStats', [yearMonth]);
+  if (result.success) return result.data;
+  throw new Error(result.message);
+});
+ipcMain.handle('db:getPeriodDetailStats', async (_, startDate, endDate) => {
+  const result = await queryStatsWorker('getPeriodDetailStats', [startDate, endDate]);
+  if (result.success) return result.data;
+  throw new Error(result.message);
+});
 ipcMain.handle('db:getPeriodStats', (_, startDate, endDate) => {
   return db.getPeriodStats(startDate, endDate);
 });
@@ -637,6 +645,77 @@ function getSmtpConfig() {
   return { ...smtp, user, pass };
 }
 
+// --- 통계 워커 (utilityProcess) ---
+let statsWorker = null;
+let statsReqId = 0;
+const statsCallbacks = new Map();
+let statsIdleTimer = null;
+
+function getStatsWorker() {
+  if (statsWorker && !statsWorker.killed) {
+    _resetStatsIdleTimer();
+    return Promise.resolve(statsWorker);
+  }
+  return new Promise((resolve, reject) => {
+    statsWorker = utilityProcess.fork(path.join(__dirname, 'src', 'modules', 'stats-worker.js'));
+    statsWorker.on('message', (msg) => {
+      const cb = statsCallbacks.get(msg.id);
+      if (cb) {
+        statsCallbacks.delete(msg.id);
+        cb(msg);
+      }
+    });
+    statsWorker.on('exit', () => {
+      statsWorker = null;
+      if (statsIdleTimer) { clearTimeout(statsIdleTimer); statsIdleTimer = null; }
+    });
+    // 초기화: DB 경로 전달
+    const id = ++statsReqId;
+    const basePath = config.getBasePath();
+    const dbFilePath = basePath ? path.join(basePath, 'Data', 'users.db') : '';
+    statsCallbacks.set(id, (msg) => {
+      if (msg.success) {
+        _resetStatsIdleTimer();
+        resolve(statsWorker);
+      } else {
+        reject(new Error(msg.message || 'Stats worker init failed'));
+      }
+    });
+    statsWorker.postMessage({ type: 'init', id, dbPath: dbFilePath });
+  });
+}
+
+function _resetStatsIdleTimer() {
+  if (statsIdleTimer) clearTimeout(statsIdleTimer);
+  statsIdleTimer = setTimeout(() => {
+    if (statsWorker && !statsWorker.killed) {
+      statsWorker.kill();
+      statsWorker = null;
+    }
+    statsIdleTimer = null;
+  }, 60000);
+}
+
+function queryStatsWorker(type, params) {
+  return new Promise(async (resolve) => {
+    try {
+      const worker = await getStatsWorker();
+      const id = ++statsReqId;
+      statsCallbacks.set(id, resolve);
+      worker.postMessage({ type, id, params });
+      // 30초 타임아웃
+      setTimeout(() => {
+        if (statsCallbacks.has(id)) {
+          statsCallbacks.delete(id);
+          resolve({ success: false, message: '통계 쿼리 시간 초과 (30초)' });
+        }
+      }, 30000);
+    } catch (err) {
+      resolve({ success: false, message: err.message });
+    }
+  });
+}
+
 let mailWorker = null;
 let mailReqId = 0;
 const mailCallbacks = new Map();
@@ -865,6 +944,10 @@ app.whenReady().then(initializeApp);
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     stopCardReader();
+    if (statsWorker && !statsWorker.killed) {
+      statsWorker.kill();
+      statsWorker = null;
+    }
     if (mailWorker && !mailWorker.killed) {
       mailWorker.kill();
       mailWorker = null;

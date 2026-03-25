@@ -1675,3 +1675,17 @@ input[type="week"] {
   color: var(--text-muted);
   min-height: 14px;
 }
+
+/* 통계 로딩 스피너 */
+.stats-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: stats-spin 0.6s linear infinite;
+}
+@keyframes stats-spin {
+  to { transform: rotate(360deg); }
+}

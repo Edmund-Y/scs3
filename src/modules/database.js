@@ -60,6 +60,7 @@ class DatabaseManager {
       this.db.run('CREATE INDEX IF NOT EXISTS idx_cards_issued_at ON cards(issued_at)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at)');
       this.db.run('CREATE INDEX IF NOT EXISTS idx_events_date_type_user ON events(created_at, event_type, user_id)');
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_events_user_type_method_date ON events(user_id, event_type, input_method, created_at)');
     } catch (e) {
       // 테이블이 아직 없을 수 있음 (최초 실행)
     }
@@ -962,58 +963,74 @@ class DatabaseManager {
 
   getMonthlyDetailStats(yearMonth) {
     return this._queryAll(`
-      WITH daily_user_menu AS (
-        SELECT user_id, DATE(created_at) as event_date,
-          CASE
-            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
-            ELSE COALESCE(
-              MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END),
-              MAX(CASE WHEN event_type = 'check_in' THEN menu_type END)
-            )
-          END as final_menu,
-          (SELECT input_method FROM events e2
-           WHERE e2.user_id = e.user_id AND DATE(e2.created_at) = DATE(e.created_at)
-           AND e2.event_type = 'check_in' AND e2.input_method != 'ticket'
-           ORDER BY e2.created_at ASC LIMIT 1) as input_method
-        FROM events e
+      WITH first_input AS (
+        SELECT DISTINCT user_id, DATE(created_at) as event_date,
+          FIRST_VALUE(input_method) OVER (
+            PARTITION BY user_id, DATE(created_at)
+            ORDER BY created_at ASC
+          ) as input_method
+        FROM events
         WHERE strftime('%Y-%m', created_at) = ?
+          AND event_type = 'check_in'
           AND input_method != 'ticket'
-        GROUP BY user_id, DATE(created_at)
+      ),
+      daily_user_menu AS (
+        SELECT e.user_id, DATE(e.created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN e.event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN e.event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(
+              MAX(CASE WHEN e.event_type = 'menu_change' THEN e.menu_type END),
+              MAX(CASE WHEN e.event_type = 'check_in' THEN e.menu_type END)
+            )
+          END as final_menu
+        FROM events e
+        WHERE strftime('%Y-%m', e.created_at) = ?
+          AND e.input_method != 'ticket'
+        GROUP BY e.user_id, DATE(e.created_at)
       )
-      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, d.input_method
+      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, fi.input_method
       FROM daily_user_menu d
       JOIN users u ON d.user_id = u.id
+      LEFT JOIN first_input fi ON fi.user_id = d.user_id AND fi.event_date = d.event_date
       WHERE u.deleted_at IS NULL AND d.final_menu IS NOT NULL
       ORDER BY CAST(u.number AS INTEGER), u.number, d.event_date
-    `, [yearMonth]);
+    `, [yearMonth, yearMonth]);
   }
 
   getPeriodDetailStats(startDate, endDate) {
     return this._queryAll(`
-      WITH daily_user_menu AS (
-        SELECT user_id, DATE(created_at) as event_date,
-          CASE
-            WHEN SUM(CASE WHEN event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
-            ELSE COALESCE(
-              MAX(CASE WHEN event_type = 'menu_change' THEN menu_type END),
-              MAX(CASE WHEN event_type = 'check_in' THEN menu_type END)
-            )
-          END as final_menu,
-          (SELECT input_method FROM events e2
-           WHERE e2.user_id = e.user_id AND DATE(e2.created_at) = DATE(e.created_at)
-           AND e2.event_type = 'check_in' AND e2.input_method != 'ticket'
-           ORDER BY e2.created_at ASC LIMIT 1) as input_method
-        FROM events e
+      WITH first_input AS (
+        SELECT DISTINCT user_id, DATE(created_at) as event_date,
+          FIRST_VALUE(input_method) OVER (
+            PARTITION BY user_id, DATE(created_at)
+            ORDER BY created_at ASC
+          ) as input_method
+        FROM events
         WHERE DATE(created_at) BETWEEN ? AND ?
+          AND event_type = 'check_in'
           AND input_method != 'ticket'
-        GROUP BY user_id, DATE(created_at)
+      ),
+      daily_user_menu AS (
+        SELECT e.user_id, DATE(e.created_at) as event_date,
+          CASE
+            WHEN SUM(CASE WHEN e.event_type = 'cancel' THEN 1 ELSE 0 END) >= SUM(CASE WHEN e.event_type = 'check_in' THEN 1 ELSE 0 END) THEN NULL
+            ELSE COALESCE(
+              MAX(CASE WHEN e.event_type = 'menu_change' THEN e.menu_type END),
+              MAX(CASE WHEN e.event_type = 'check_in' THEN e.menu_type END)
+            )
+          END as final_menu
+        FROM events e
+        WHERE DATE(e.created_at) BETWEEN ? AND ?
+          AND e.input_method != 'ticket'
+        GROUP BY e.user_id, DATE(e.created_at)
       )
-      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, d.input_method
+      SELECT d.user_id, u.number, u.name, d.event_date, d.final_menu, fi.input_method
       FROM daily_user_menu d
       JOIN users u ON d.user_id = u.id
+      LEFT JOIN first_input fi ON fi.user_id = d.user_id AND fi.event_date = d.event_date
       WHERE u.deleted_at IS NULL AND d.final_menu IS NOT NULL
       ORDER BY CAST(u.number AS INTEGER), u.number, d.event_date
-    `, [startDate, endDate]);
+    `, [startDate, endDate, startDate, endDate]);
   }
 
   getPeriodStats(startDate, endDate) {
