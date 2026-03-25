@@ -117,7 +117,7 @@ class DatabaseManager {
       this._lastInsertRowId = this._fetchLastInsertRowId();
       this._save();
     } catch (e) {
-      console.error(`[DB:_run] SQL 실행 실패:`, e.message, '\nSQL:', sql, '\nParams:', JSON.stringify(params));
+      this.logger.error(`[DB:_run] SQL 실행 실패: ${e.message} | SQL: ${sql} | Params: ${JSON.stringify(params)}`);
       throw e;
     }
   }
@@ -309,7 +309,7 @@ class DatabaseManager {
 
       this._run(`INSERT INTO users (number, name, notes) VALUES (?, ?, ?)`, [number, name, notes || null]);
       const userId = this._getLastInsertRowId();
-      console.log(`[addUser] 새 사용자 생성 완료: userId=${userId}, number=${number}`);
+      this.logger.debug(`[DB:addUser] 새 사용자 생성 완료: userId=${userId}, number=${number}`);
 
       // 카드 번호가 있으면 카드 추가
       if (cardNumber) {
@@ -327,6 +327,7 @@ class DatabaseManager {
 
   updateUser(userId, name, notes) {
     try {
+      this.logger.debug(`[DB:updateUser] userId=${userId}, name=${name}`);
       const user = this._queryOne(`SELECT number FROM users WHERE id = ?`, [userId]);
       if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
       if (user.number === 'TICKET') return { success: false, message: '시스템 사용자(TICKET)는 수정할 수 없습니다' };
@@ -339,14 +340,17 @@ class DatabaseManager {
 
       params.push(userId);
       this._run(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`, params);
+      this.logger.debug(`[DB:updateUser] 성공: userId=${userId}`);
       return { success: true, message: '사용자 수정 성공' };
     } catch (e) {
+      this.logger.error(`[DB:updateUser] 실패: ${e.message}`);
       return { success: false, message: `사용자 수정 실패: ${e.message}` };
     }
   }
 
   suspendUser(userId) {
     try {
+      this.logger.debug(`[DB:suspendUser] userId=${userId}`);
       const user = this._queryOne(`SELECT number, status FROM users WHERE id = ?`, [userId]);
       if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
       if (user.number === 'TICKET') return { success: false, message: '시스템 사용자(TICKET)는 일시정지할 수 없습니다' };
@@ -354,40 +358,49 @@ class DatabaseManager {
       if (user.status === 'terminated') return { success: false, message: '종결된 사용자는 일시정지할 수 없습니다' };
 
       this._run(`UPDATE users SET status = 'suspended', deleted_at = ? WHERE id = ?`, [this._kstNow(), userId]);
+      this.logger.debug(`[DB:suspendUser] 성공: userId=${userId}`);
       return { success: true, message: '사용자 일시정지 성공' };
     } catch (e) {
+      this.logger.error(`[DB:suspendUser] 실패: ${e.message}`);
       return { success: false, message: `사용자 일시정지 실패: ${e.message}` };
     }
   }
 
   terminateUser(userId) {
     try {
+      this.logger.debug(`[DB:terminateUser] userId=${userId}`);
       const user = this._queryOne(`SELECT number, status FROM users WHERE id = ?`, [userId]);
       if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
       if (user.number === 'TICKET') return { success: false, message: '시스템 사용자(TICKET)는 종결할 수 없습니다' };
       if (user.status === 'terminated') return { success: false, message: '이미 종결된 사용자입니다' };
 
       this._run(`UPDATE users SET status = 'terminated', deleted_at = ? WHERE id = ?`, [this._kstNow(), userId]);
+      this.logger.debug(`[DB:terminateUser] 성공: userId=${userId}`);
       return { success: true, message: '사용자 종결 성공 (번호 재사용 가능)' };
     } catch (e) {
+      this.logger.error(`[DB:terminateUser] 실패: ${e.message}`);
       return { success: false, message: `사용자 종결 실패: ${e.message}` };
     }
   }
 
   reactivateUser(userId) {
     try {
+      this.logger.debug(`[DB:reactivateUser] userId=${userId}`);
       const user = this._queryOne(`SELECT status FROM users WHERE id = ?`, [userId]);
       if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
       if (user.status === 'active') return { success: false, message: '이미 활성 상태입니다' };
 
       this._run(`UPDATE users SET status = 'active', deleted_at = NULL WHERE id = ?`, [userId]);
+      this.logger.debug(`[DB:reactivateUser] 성공: userId=${userId}`);
       return { success: true, message: '사용자 재활성화 성공' };
     } catch (e) {
+      this.logger.error(`[DB:reactivateUser] 실패: ${e.message}`);
       return { success: false, message: `사용자 재활성화 실패: ${e.message}` };
     }
   }
 
   searchUsers(query, statusFilter = 'all') {
+    this.logger.debug(`[DB:searchUsers] query=${query}, statusFilter=${statusFilter}`);
     return this._queryAll(`
       SELECT u.*,
         (SELECT card_number FROM cards c WHERE c.user_id = u.id AND c.deactivated_at IS NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1) as card_number
@@ -400,6 +413,7 @@ class DatabaseManager {
   }
 
   searchUsersPaginated(query, statusFilter = 'all', page = 1, pageSize = 50) {
+    this.logger.debug(`[DB:searchUsersPaginated] query=${query}, statusFilter=${statusFilter}, page=${page}`);
     const offset = (page - 1) * pageSize;
     const totalRow = this._queryOne(`
       SELECT COUNT(*) as total FROM users u
@@ -424,6 +438,7 @@ class DatabaseManager {
   }
 
   getUserById(userId) {
+    this.logger.debug(`[DB:getUserById] userId=${userId}`);
     const user = this._queryOne(`SELECT * FROM users WHERE id = ?`, [userId]);
     if (!user) return null;
     // 특이사항 포함
@@ -439,6 +454,7 @@ class DatabaseManager {
   }
 
   getUserByNumber(number) {
+    this.logger.debug(`[DB:getUserByNumber] number=${number}`);
     const user = this._queryOne(`SELECT * FROM users WHERE number = ? AND status IN ('active', 'suspended')`, [number]);
     if (!user) return null;
     const remarks = this._queryAll(`
@@ -453,6 +469,7 @@ class DatabaseManager {
   }
 
   getUserByCardNumber(cardNumber) {
+    this.logger.debug(`[DB:getUserByCardNumber] cardNumber=${cardNumber}`);
     return this._queryOne(`
       SELECT u.* FROM users u JOIN cards c ON u.id = c.user_id
       WHERE c.card_number = ? AND c.deactivated_at IS NULL AND u.status IN ('active', 'suspended')
@@ -498,9 +515,9 @@ class DatabaseManager {
       const existing = this._queryOne(`SELECT id, user_id FROM cards WHERE card_number = ? AND deactivated_at IS NULL`, [cardNumber]);
       if (existing) return { success: false, message: `이미 사용 중인 카드 번호입니다: ${cardNumber}`, cardId: null };
 
-      console.log(`[addCard] userId=${userId}, cardNumber=${cardNumber}`);
+      this.logger.debug(`[DB:addCard] userId=${userId}, cardNumber=${cardNumber}`);
       const user = this._queryOne(`SELECT id, deleted_at FROM users WHERE id = ?`, [userId]);
-      console.log(`[addCard] user lookup result:`, JSON.stringify(user));
+      this.logger.debug(`[DB:addCard] user lookup result: ${JSON.stringify(user)}`);
       if (!user || user.deleted_at !== null) return { success: false, message: '사용자를 찾을 수 없습니다', cardId: null };
 
       this._upsertCard(userId, cardNumber);
@@ -513,9 +530,12 @@ class DatabaseManager {
 
   deactivateCard(cardId, reason) {
     try {
+      this.logger.debug(`[DB:deactivateCard] cardId=${cardId}, reason=${reason}`);
       this._run(`UPDATE cards SET deactivated_at = datetime('now','localtime'), reissue_reason = ? WHERE id = ?`, [reason, cardId]);
+      this.logger.debug(`[DB:deactivateCard] 성공: cardId=${cardId}`);
       return { success: true, message: '카드 비활성화 성공' };
     } catch (e) {
+      this.logger.error(`[DB:deactivateCard] 실패: ${e.message}`);
       return { success: false, message: `카드 비활성화 실패: ${e.message}` };
     }
   }
@@ -538,6 +558,7 @@ class DatabaseManager {
 
   reissueCard(userId, newCardNumber, reason = '카드 재발급') {
     try {
+      this.logger.debug(`[DB:reissueCard] userId=${userId}, newCardNumber=${newCardNumber}, reason=${reason}`);
       // 새 카드가 다른 사용자의 활성 카드로 이미 등록된 경우 차단
       const conflict = this._queryOne(
         `SELECT c.id, u.number, u.name FROM cards c JOIN users u ON c.user_id = u.id
@@ -560,14 +581,17 @@ class DatabaseManager {
       }
       // 새 카드 추가
       this._upsertCard(userId, newCardNumber);
+      this.logger.debug(`[DB:reissueCard] 성공: userId=${userId}, newCardNumber=${newCardNumber}`);
       return { success: true, message: '카드가 재발급되었습니다' };
     } catch (e) {
+      this.logger.error(`[DB:reissueCard] 실패: ${e.message}`);
       return { success: false, message: `카드 재발급 실패: ${e.message}` };
     }
   }
 
   transferCard(cardNumber, targetUserId, reason = '카드 이전') {
     try {
+      this.logger.debug(`[DB:transferCard] cardNumber=${cardNumber}, targetUserId=${targetUserId}, reason=${reason}`);
       const ownerInfo = this.getCardOwnerInfo(cardNumber);
       if (!ownerInfo) return { success: false, message: '카드의 현재 소유자를 찾을 수 없습니다' };
       if (ownerInfo.id === targetUserId) return { success: false, message: '자기 자신에게 카드를 이전할 수 없습니다' };
@@ -597,8 +621,10 @@ class DatabaseManager {
 
       // 새 소유자에게 카드 배정
       this._upsertCard(targetUserId, cardNumber);
+      this.logger.debug(`[DB:transferCard] 성공: cardNumber=${cardNumber} → targetUserId=${targetUserId}`);
       return { success: true, message: '카드가 성공적으로 이전되었습니다' };
     } catch (e) {
+      this.logger.error(`[DB:transferCard] 실패: ${e.message}`);
       return { success: false, message: `카드 이전 실패: ${e.message}` };
     }
   }
@@ -606,6 +632,7 @@ class DatabaseManager {
   // 종결 사용자 영구 삭제 (카드, 이벤트, 특이사항 포함)
   purgeUser(userId) {
     try {
+      this.logger.debug(`[DB:purgeUser] userId=${userId}`);
       const user = this._queryOne(`SELECT status FROM users WHERE id = ?`, [userId]);
       if (!user) return { success: false, message: '사용자를 찾을 수 없습니다' };
       if (user.status !== 'terminated') return { success: false, message: '종결된 사용자만 영구 삭제할 수 있습니다' };
@@ -614,8 +641,10 @@ class DatabaseManager {
       this._run(`DELETE FROM events WHERE user_id = ?`, [userId]);
       this._run(`DELETE FROM user_special_remarks WHERE user_id = ?`, [userId]);
       this._run(`DELETE FROM users WHERE id = ?`, [userId]);
+      this.logger.debug(`[DB:purgeUser] 영구 삭제 성공: userId=${userId}`);
       return { success: true };
     } catch (e) {
+      this.logger.error(`[DB:purgeUser] 실패: ${e.message}`);
       return { success: false, message: `영구 삭제 실패: ${e.message}` };
     }
   }
@@ -623,24 +652,30 @@ class DatabaseManager {
   // 종결일로부터 1년 이상 지난 종결자 자동 영구 삭제
   purgeExpiredUsers() {
     try {
+      this.logger.debug(`[DB:purgeExpiredUsers] 만료 사용자 확인 중...`);
       const expired = this._queryAll(
         `SELECT id FROM users WHERE status = 'terminated' AND deleted_at IS NOT NULL
          AND date(deleted_at) <= date('now', '-1 year')`
       );
+      this.logger.debug(`[DB:purgeExpiredUsers] 만료 사용자 ${expired.length}명 발견`);
       for (const u of expired) {
         this.purgeUser(u.id);
       }
       return { success: true, count: expired.length };
     } catch (e) {
+      this.logger.error(`[DB:purgeExpiredUsers] 실패: ${e.message}`);
       return { success: false, message: e.message };
     }
   }
 
   deleteCardsForUser(userId) {
     try {
+      this.logger.debug(`[DB:deleteCardsForUser] userId=${userId}`);
       this._run(`DELETE FROM cards WHERE user_id = ?`, [userId]);
+      this.logger.debug(`[DB:deleteCardsForUser] 성공: userId=${userId}`);
       return { success: true };
     } catch (e) {
+      this.logger.error(`[DB:deleteCardsForUser] 실패: ${e.message}`);
       return { success: false, message: e.message };
     }
   }
@@ -649,7 +684,7 @@ class DatabaseManager {
 
   checkIn(userId, menuType, inputMethod, notes, duplicateWindowMinutes = 5) {
     try {
-      console.log(`[DB:checkIn] userId=${userId}, menuType=${menuType}, inputMethod=${inputMethod}, dupWindow=${duplicateWindowMinutes}`);
+      this.logger.debug(`[DB:checkIn] userId=${userId}, menuType=${menuType}, inputMethod=${inputMethod}, dupWindow=${duplicateWindowMinutes}`);
 
       // N분 이내 중복 체크
       const recentCheckin = this._queryOne(`
@@ -660,7 +695,7 @@ class DatabaseManager {
       `, [userId, duplicateWindowMinutes]);
 
       if (recentCheckin) {
-        console.log(`[DB:checkIn] ${duplicateWindowMinutes}분 이내 중복 시도 차단: userId=${userId}`);
+        this.logger.debug(`[DB:checkIn] ${duplicateWindowMinutes}분 이내 중복 시도 차단: userId=${userId}`);
         const today = this._kstToday();
         const countRow = this._queryOne(`
           SELECT COUNT(*) as count FROM events
@@ -696,16 +731,17 @@ class DatabaseManager {
       `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
 
       const count = countRow ? countRow.count : 1;
-      console.log(`[DB:checkIn] 성공 - count=${count}`);
+      this.logger.debug(`[DB:checkIn] 성공 - count=${count}`);
       return { success: true, count, event: eventInfo };
     } catch (e) {
-      console.error(`[DB:checkIn] 실패:`, e.message);
+      this.logger.error(`[DB:checkIn] 실패: ${e.message}`);
       return { success: false, count: 0, error: e.message };
     }
   }
 
   addTicket() {
     try {
+      this.logger.debug(`[DB:addTicket] 식권 추가`);
       let ticketUser = this._queryOne(`SELECT * FROM users WHERE number = 'TICKET'`);
       if (!ticketUser) {
         this._run(`INSERT INTO users (number, name, notes) VALUES ('TICKET', '식권구매', '시스템 사용자')`);
@@ -716,14 +752,17 @@ class DatabaseManager {
       const eventInfo = this._queryOne(`SELECT e.*, u.number, u.name FROM events e JOIN users u ON e.user_id = u.id WHERE e.id = ?`, [insertRow.id]);
       const today = this._kstToday();
       const countRow = this._queryOne(`SELECT COUNT(*) as count FROM events WHERE user_id = ? AND event_type = 'check_in' AND created_at BETWEEN ? AND ?`, [ticketUser.id, today + ' 00:00:00', today + ' 23:59:59']);
+      this.logger.debug(`[DB:addTicket] 성공: count=${countRow ? countRow.count : 1}`);
       return { success: true, count: countRow ? countRow.count : 1, event: eventInfo };
     } catch (e) {
+      this.logger.error(`[DB:addTicket] 실패: ${e.message}`);
       return { success: false, message: e.message };
     }
   }
 
   cancelLastTicket() {
     try {
+      this.logger.debug(`[DB:cancelLastTicket] 식권 취소 시도`);
       const ticketUser = this._queryOne(`SELECT id FROM users WHERE number = 'TICKET'`);
       if (!ticketUser) return { success: false, message: '식권 사용자를 찾을 수 없습니다.' };
       const today = this._kstToday();
@@ -735,29 +774,34 @@ class DatabaseManager {
       `, [ticketUser.id, today + ' 00:00:00', today + ' 23:59:59']);
       if (!lastEvent) return { success: false, message: '취소할 식권 기록이 없습니다.' };
       this._run(`UPDATE events SET event_type = 'cancel' WHERE id = ?`, [lastEvent.id]);
+      this.logger.debug(`[DB:cancelLastTicket] 성공: eventId=${lastEvent.id}`);
       return { success: true };
     } catch (e) {
+      this.logger.error(`[DB:cancelLastTicket] 실패: ${e.message}`);
       return { success: false, message: e.message };
     }
   }
 
   cancelCheckIn(userId) {
     try {
+      this.logger.debug(`[DB:cancelCheckIn] userId=${userId}`);
       const today = this._kstToday();
       this._run(`
         UPDATE events SET event_type = 'cancel'
         WHERE user_id = ? AND event_type = 'check_in'
         AND created_at BETWEEN ? AND ?
       `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
+      this.logger.debug(`[DB:cancelCheckIn] 성공: userId=${userId}`);
       return { success: true, message: '체크인 취소 성공' };
     } catch (e) {
+      this.logger.error(`[DB:cancelCheckIn] 실패: ${e.message}`);
       return { success: false, message: `체크인 취소 실패: ${e.message}` };
     }
   }
 
   cancelEventById(eventId) {
     try {
-      console.log(`[DB:cancelEventById] eventId=${eventId}`);
+      this.logger.debug(`[DB:cancelEventById] eventId=${eventId}`);
 
       // 1. 해당 이벤트의 user_id, input_method 찾기
       const eventRow = this._queryOne(`SELECT user_id, input_method FROM events WHERE id = ?`, [eventId]);
@@ -767,21 +811,21 @@ class DatabaseManager {
 
       // 식권은 단일 건만 취소 (같은 TICKET 유저를 공유하므로 전체 취소하면 안 됨)
       if (eventRow.input_method === 'ticket') {
-        console.log(`[DB:cancelEventById] 식권 단일 취소 진행: eventId=${eventId}`);
+        this.logger.debug(`[DB:cancelEventById] 식권 단일 취소 진행: eventId=${eventId}`);
         this._run(`
           UPDATE events
           SET event_type = 'cancel'
           WHERE id = ?
             AND event_type = 'check_in'
         `, [eventId]);
-        console.log(`[DB:cancelEventById] 식권 단일 취소 성공`);
+        this.logger.debug(`[DB:cancelEventById] 식권 단일 취소 성공`);
         return { success: true, message: '식권 1건 취소 성공' };
       }
 
       const userId = eventRow.user_id;
 
       // 2. 해당 유저의 오늘자 모든 check_in 이벤트를 취소 처리
-      console.log(`[DB:cancelEventById] 당일 전체 취소 진행: userId=${userId}`);
+      this.logger.debug(`[DB:cancelEventById] 당일 전체 취소 진행: userId=${userId}`);
       const today = this._kstToday();
       this._run(`
         UPDATE events
@@ -791,22 +835,22 @@ class DatabaseManager {
           AND created_at BETWEEN ? AND ?
       `, [userId, today + ' 00:00:00', today + ' 23:59:59']);
 
-      console.log(`[DB:cancelEventById] 당일 전체 취소 성공`);
+      this.logger.debug(`[DB:cancelEventById] 당일 전체 취소 성공`);
       return { success: true, message: '당일 전체 취소 성공' };
     } catch (e) {
-      console.error(`[DB:cancelEventById] 에러:`, e.message);
+      this.logger.error(`[DB:cancelEventById] 에러: ${e.message}`);
       return { success: false, message: `취소 실패: ${e.message}` };
     }
   }
 
   updateEventMenu(eventId, menuType) {
     try {
-      console.log(`[DB:updateEventMenu] eventId=${eventId}, menuType=${menuType}`);
+      this.logger.debug(`[DB:updateEventMenu] eventId=${eventId}, menuType=${menuType}`);
       this._run(`UPDATE events SET menu_type = ? WHERE id = ?`, [menuType, eventId]);
-      console.log(`[DB:updateEventMenu] 성공`);
+      this.logger.debug(`[DB:updateEventMenu] 성공`);
       return { success: true, message: '메뉴 변경 성공' };
     } catch (e) {
-      console.error(`[DB:updateEventMenu] 에러:`, e.message);
+      this.logger.error(`[DB:updateEventMenu] 에러: ${e.message}`);
       return { success: false, message: `변경 실패: ${e.message}` };
     }
   }
@@ -815,7 +859,7 @@ class DatabaseManager {
     const today = this._kstToday();
     const dayStart = today + ' 00:00:00';
     const dayEnd = today + ' 23:59:59';
-    console.log(`[DB:getDailyStats] today=${today}`);
+    this.logger.debug(`[DB:getDailyStats] today=${today}`);
     const row = this._queryOne(`
       WITH user_final_menu AS (
         SELECT user_id, input_method,
@@ -835,13 +879,13 @@ class DatabaseManager {
         SUM(CASE WHEN final_menu = 'ticket' THEN 1 ELSE 0 END) as ticket
       FROM user_final_menu
     `, [dayStart, dayEnd, dayStart, dayEnd, dayStart, dayEnd]);
-    console.log(`[DB:getDailyStats] result=`, JSON.stringify(row));
+    this.logger.debug(`[DB:getDailyStats] result=${JSON.stringify(row)}`);
     return row || { total: 0, normal: 0, porridge: 0, ticket: 0 };
   }
 
   getTodayEvents() {
     const today = this._kstToday();
-    console.log(`[DB:getTodayEvents] today=${today}`);
+    this.logger.debug(`[DB:getTodayEvents] today=${today}`);
     const events = this._queryAll(`
       SELECT e.*, u.number, u.name,
         (SELECT GROUP_CONCAT(sr.name, ', ')
@@ -853,7 +897,7 @@ class DatabaseManager {
       AND u.deleted_at IS NULL
       ORDER BY e.created_at DESC
     `, [today, today]);
-    console.log(`[DB:getTodayEvents] ${events.length}건 조회됨`);
+    this.logger.debug(`[DB:getTodayEvents] ${events.length}건 조회됨`);
     return events;
   }
 
@@ -875,35 +919,44 @@ class DatabaseManager {
 
   addSpecialRemark(name, description, displayOrder, startDate, endDate, isActive) {
     try {
+      this.logger.debug(`[DB:addSpecialRemark] name=${name}`);
       const existing = this._queryOne(`SELECT id FROM special_remarks WHERE name = ?`, [name]);
       if (existing) return { success: false, message: `이미 존재하는 특이사항입니다: ${name}` };
 
       this._run(`INSERT INTO special_remarks (name, description, display_order, start_date, end_date, is_active) VALUES (?, ?, ?, ?, ?, ?)`,
         [name, description, displayOrder || 0, startDate || null, endDate || null, isActive !== undefined ? isActive : 1]);
+      this.logger.debug(`[DB:addSpecialRemark] 성공: name=${name}`);
       return { success: true, message: '특이사항 추가 성공' };
     } catch (e) {
+      this.logger.error(`[DB:addSpecialRemark] 실패: ${e.message}`);
       return { success: false, message: `특이사항 추가 실패: ${e.message}` };
     }
   }
 
   updateSpecialRemark(remarkId, name, description, isActive, startDate, endDate) {
     try {
+      this.logger.debug(`[DB:updateSpecialRemark] remarkId=${remarkId}, name=${name}`);
       const existing = this._queryOne(`SELECT id FROM special_remarks WHERE name = ? AND id != ?`, [name, remarkId]);
       if (existing) return { success: false, message: `이미 존재하는 이름입니다: ${name}` };
       this._run(`UPDATE special_remarks SET name = ?, description = ?, is_active = ?, start_date = ?, end_date = ? WHERE id = ?`,
         [name, description || null, isActive ? 1 : 0, startDate || null, endDate || null, remarkId]);
+      this.logger.debug(`[DB:updateSpecialRemark] 성공: remarkId=${remarkId}`);
       return { success: true, message: '특이사항 수정 성공' };
     } catch (e) {
+      this.logger.error(`[DB:updateSpecialRemark] 실패: ${e.message}`);
       return { success: false, message: `특이사항 수정 실패: ${e.message}` };
     }
   }
 
   deleteSpecialRemark(remarkId) {
     try {
+      this.logger.debug(`[DB:deleteSpecialRemark] remarkId=${remarkId}`);
       this._run(`DELETE FROM user_special_remarks WHERE remark_id = ?`, [remarkId]);
       this._run(`DELETE FROM special_remarks WHERE id = ?`, [remarkId]);
+      this.logger.debug(`[DB:deleteSpecialRemark] 성공: remarkId=${remarkId}`);
       return { success: true, message: '특이사항 삭제 성공' };
     } catch (e) {
+      this.logger.error(`[DB:deleteSpecialRemark] 실패: ${e.message}`);
       return { success: false, message: `특이사항 삭제 실패: ${e.message}` };
     }
   }
@@ -919,20 +972,26 @@ class DatabaseManager {
 
   assignRemark(userId, remarkId) {
     try {
+      this.logger.debug(`[DB:assignRemark] userId=${userId}, remarkId=${remarkId}`);
       const existing = this._queryOne(`SELECT id FROM user_special_remarks WHERE user_id = ? AND remark_id = ?`, [userId, remarkId]);
       if (existing) return { success: false, message: '이미 배정되어 있습니다' };
       this._run(`INSERT INTO user_special_remarks (user_id, remark_id) VALUES (?, ?)`, [userId, remarkId]);
+      this.logger.debug(`[DB:assignRemark] 성공: userId=${userId}, remarkId=${remarkId}`);
       return { success: true, message: '특이사항 배정 성공' };
     } catch (e) {
+      this.logger.error(`[DB:assignRemark] 실패: ${e.message}`);
       return { success: false, message: `배정 실패: ${e.message}` };
     }
   }
 
   unassignRemark(userId, remarkId) {
     try {
+      this.logger.debug(`[DB:unassignRemark] userId=${userId}, remarkId=${remarkId}`);
       this._run(`DELETE FROM user_special_remarks WHERE user_id = ? AND remark_id = ?`, [userId, remarkId]);
+      this.logger.debug(`[DB:unassignRemark] 성공: userId=${userId}, remarkId=${remarkId}`);
       return { success: true, message: '특이사항 해제 성공' };
     } catch (e) {
+      this.logger.error(`[DB:unassignRemark] 실패: ${e.message}`);
       return { success: false, message: `해제 실패: ${e.message}` };
     }
   }
@@ -940,6 +999,7 @@ class DatabaseManager {
   // ==================== 통계 ====================
 
   getMonthlyStats(yearMonth) {
+    this.logger.debug(`[DB:getMonthlyStats] yearMonth=${yearMonth}`);
     return this._queryAll(`
       WITH daily_user_menu AS (
         SELECT user_id, DATE(created_at) as event_date,
@@ -962,6 +1022,7 @@ class DatabaseManager {
   }
 
   getMonthlyDetailStats(yearMonth) {
+    this.logger.debug(`[DB:getMonthlyDetailStats] yearMonth=${yearMonth}`);
     return this._queryAll(`
       WITH first_input AS (
         SELECT DISTINCT user_id, DATE(created_at) as event_date,
@@ -998,6 +1059,7 @@ class DatabaseManager {
   }
 
   getPeriodDetailStats(startDate, endDate) {
+    this.logger.debug(`[DB:getPeriodDetailStats] startDate=${startDate}, endDate=${endDate}`);
     return this._queryAll(`
       WITH first_input AS (
         SELECT DISTINCT user_id, DATE(created_at) as event_date,
@@ -1034,6 +1096,7 @@ class DatabaseManager {
   }
 
   getPeriodStats(startDate, endDate) {
+    this.logger.debug(`[DB:getPeriodStats] startDate=${startDate}, endDate=${endDate}`);
     return this._queryAll(`
       WITH daily_user_menu AS (
         SELECT user_id, DATE(created_at) as event_date,
@@ -1056,6 +1119,7 @@ class DatabaseManager {
   }
 
   getDailyRangeStats(startDate, endDate) {
+    this.logger.debug(`[DB:getDailyRangeStats] startDate=${startDate}, endDate=${endDate}`);
     return this._queryAll(`
       WITH daily_user_menu AS (
         SELECT user_id, DATE(created_at) as event_date,
@@ -1075,6 +1139,7 @@ class DatabaseManager {
   }
 
   getOperatingDays(startDate, endDate) {
+    this.logger.debug(`[DB:getOperatingDays] startDate=${startDate}, endDate=${endDate}`);
     return this._queryAll(`
       SELECT DISTINCT DATE(created_at) as op_date
       FROM events
@@ -1085,6 +1150,7 @@ class DatabaseManager {
   }
 
   getAllUsersWeekdayUsage(startDate, endDate) {
+    this.logger.debug(`[DB:getAllUsersWeekdayUsage] startDate=${startDate}, endDate=${endDate}`);
     return this._queryAll(`
       SELECT u.id, u.number, u.name, COUNT(DISTINCT DATE(e.created_at)) as used_days
       FROM users u

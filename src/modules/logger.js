@@ -5,12 +5,15 @@
 const fs = require('fs');
 const path = require('path');
 
+const LEVELS = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+
 class Logger {
   constructor(config) {
     this.config = config;
     this.logDir = null;
     this.logFile = null;
     this._window = null;
+    this._level = LEVELS.INFO; // 기본값: INFO
 
     const logDir = config.getLogDir();
     if (logDir) {
@@ -29,12 +32,15 @@ class Logger {
     this._window = win;
   }
 
-  _formatMessage(level, message) {
-    const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    return `${now} - ${level} - ${message}`;
+  setLevel(levelName) {
+    const upper = String(levelName).toUpperCase();
+    this._level = LEVELS[upper] !== undefined ? LEVELS[upper] : LEVELS.INFO;
   }
 
   _write(level, message) {
+    const numericLevel = LEVELS[level];
+    if (numericLevel === undefined || numericLevel < this._level) return;
+
     const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
     const formatted = `${timestamp} - ${level} - ${message}`;
     console.log(formatted);
@@ -58,4 +64,4 @@ class Logger {
   critical(msg) { this._write('CRITICAL', msg); }
 }
 
-module.exports = { Logger };
+module.exports = { Logger, LEVELS };

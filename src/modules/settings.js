@@ -11,10 +11,12 @@ class SettingsManager {
 
   get(key, defaultValue = null) {
     try {
+      this.logger.debug(`[Settings:get] key=${key}`);
       const row = this.db._queryOne(`SELECT value FROM app_settings WHERE key = ?`, [key]);
       if (!row) return defaultValue;
       return this._convertType(row.value);
     } catch (e) {
+      this.logger.error(`[Settings:get] 실패: key=${key}, ${e.message}`);
       return defaultValue;
     }
   }
@@ -22,6 +24,8 @@ class SettingsManager {
   set(key, value) {
     try {
       const strValue = String(value);
+      const safeValue = key === 'smtp_pass' ? '***' : strValue;
+      this.logger.debug(`[Settings:set] key=${key}, value=${safeValue}`);
       const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
       this.db._run(`UPDATE app_settings SET value = ?, updated_at = ? WHERE key = ?`, [strValue, now, key]);
       // 레코드가 없으면 INSERT
@@ -31,12 +35,14 @@ class SettingsManager {
       }
       return true;
     } catch (e) {
+      this.logger.error(`[Settings:set] 실패: key=${key}, ${e.message}`);
       return false;
     }
   }
 
   getAll() {
     try {
+      this.logger.debug('[Settings:getAll]');
       const rows = this.db._queryAll(`SELECT key, value FROM app_settings`);
       const result = {};
       for (const row of rows) {
@@ -44,6 +50,7 @@ class SettingsManager {
       }
       return result;
     } catch (e) {
+      this.logger.error(`[Settings:getAll] 실패: ${e.message}`);
       return {};
     }
   }

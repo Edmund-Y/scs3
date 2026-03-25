@@ -123,6 +123,7 @@ async function listSerialPorts() {
     const ports = await SerialPort.list();
     return ports.map(p => ({ path: p.path, manufacturer: p.manufacturer || '', friendlyName: p.friendlyName || '' }));
   } catch (e) {
+    if (logger) logger.error(`[시리얼] 포트 목록 조회 실패: ${e.message}`);
     return [];
   }
 }
@@ -199,6 +200,7 @@ async function initializeApp() {
 
   // 2. 로거 초기화
   logger = new Logger(config);
+  config.setLogger(logger);
 
   logger.info('='.repeat(60));
   logger.info(`경로식당 이용자 관리 프로그램 v${app.getVersion()} 시작 (Electron)`);
@@ -226,6 +228,9 @@ async function initializeApp() {
 
       // 5. 설정 관리자 (DB 기반)
       settings = new SettingsManager(db, logger);
+
+      // 로그 레벨 적용
+      logger.setLevel(settings.get('log_level', 'INFO'));
 
       // 기존 평문 SMTP 비밀번호 암호화 마이그레이션
       for (const ek of ENCRYPTED_KEYS) {
@@ -276,10 +281,16 @@ async function initializeApp() {
 
 // --- 로깅 브릿지 ---
 ipcMain.on('console-log', (event, level, ...args) => {
+  if (!logger) return;
+  const message = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
   if (level === 'ERROR') {
-    console.error(`[Renderer ERROR]`, ...args);
+    logger.error(`[Renderer] ${message}`);
+  } else if (level === 'WARNING') {
+    logger.warning(`[Renderer] ${message}`);
+  } else if (level === 'DEBUG') {
+    logger.debug(`[Renderer] ${message}`);
   } else {
-    console.log(`[Renderer INFO]`, ...args);
+    logger.info(`[Renderer] ${message}`);
   }
 });
 
@@ -407,6 +418,10 @@ ipcMain.handle('settings:get', (_, key, defaultValue) => {
 });
 ipcMain.handle('settings:set', (_, key, value) => {
   if (!settings) return false;
+  if (key === 'log_level') {
+    if (logger) logger.setLevel(value);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('log:level-changed', value);
+  }
   if (ENCRYPTED_KEYS.includes(key) && value) return settings.set(key, encryptValue(value));
   return settings.set(key, value);
 });
@@ -620,6 +635,7 @@ ipcMain.handle('setup:createDatabase', async (_, basePath) => {
 
     // 설정 관리자 초기화
     settings = new SettingsManager(db, logger);
+    logger.setLevel(settings.get('log_level', 'INFO'));
 
     logger.info('초기 데이터베이스 생성 완료');
     return { success: true };
@@ -657,8 +673,16 @@ function getStatsWorker() {
     return Promise.resolve(statsWorker);
   }
   return new Promise((resolve, reject) => {
+    logger.debug('[StatsWorker] 워커 프로세스 생성');
     statsWorker = utilityProcess.fork(path.join(__dirname, 'src', 'modules', 'stats-worker.js'));
     statsWorker.on('message', (msg) => {
+      if (msg.type === 'log') {
+        if (logger) {
+          const method = msg.level === 'ERROR' ? 'error' : msg.level === 'WARNING' ? 'warning' : 'debug';
+          logger[method](msg.message);
+        }
+        return;
+      }
       const cb = statsCallbacks.get(msg.id);
       if (cb) {
         statsCallbacks.delete(msg.id);
@@ -666,6 +690,7 @@ function getStatsWorker() {
       }
     });
     statsWorker.on('exit', () => {
+      logger.debug('[StatsWorker] 워커 프로세스 종료');
       statsWorker = null;
       if (statsIdleTimer) { clearTimeout(statsIdleTimer); statsIdleTimer = null; }
     });
@@ -689,6 +714,7 @@ function _resetStatsIdleTimer() {
   if (statsIdleTimer) clearTimeout(statsIdleTimer);
   statsIdleTimer = setTimeout(() => {
     if (statsWorker && !statsWorker.killed) {
+      logger.debug('[StatsWorker] 60초 유휴 → 워커 종료');
       statsWorker.kill();
       statsWorker = null;
     }
@@ -707,10 +733,12 @@ function queryStatsWorker(type, params) {
       setTimeout(() => {
         if (statsCallbacks.has(id)) {
           statsCallbacks.delete(id);
+          logger.warning(`[StatsWorker] 쿼리 타임아웃 (30초): type=${type}`);
           resolve({ success: false, message: '통계 쿼리 시간 초과 (30초)' });
         }
       }, 30000);
     } catch (err) {
+      logger.error(`[StatsWorker] 쿼리 실행 실패: ${err.message}`);
       resolve({ success: false, message: err.message });
     }
   });
@@ -722,8 +750,16 @@ const mailCallbacks = new Map();
 
 function getMailWorker() {
   if (mailWorker && !mailWorker.killed) return mailWorker;
+  logger.debug('[MailWorker] 워커 프로세스 생성');
   mailWorker = utilityProcess.fork(path.join(__dirname, 'src', 'modules', 'mail-worker.js'));
   mailWorker.on('message', (msg) => {
+    if (msg.type === 'log') {
+      if (logger) {
+        const method = msg.level === 'ERROR' ? 'error' : msg.level === 'WARNING' ? 'warning' : 'debug';
+        logger[method](msg.message);
+      }
+      return;
+    }
     const cb = mailCallbacks.get(msg.id);
     if (cb) {
       mailCallbacks.delete(msg.id);
@@ -731,6 +767,7 @@ function getMailWorker() {
     }
   });
   mailWorker.on('exit', () => {
+    logger.debug('[MailWorker] 워커 프로세스 종료');
     mailWorker = null;
   });
   return mailWorker;
@@ -745,6 +782,7 @@ function sendMailViaWorker(type, config, mailOptions) {
     setTimeout(() => {
       if (mailCallbacks.has(id)) {
         mailCallbacks.delete(id);
+        logger.warning(`[MailWorker] 메일 발송 타임아웃 (30초)`);
         resolve({ success: false, message: '메일 발송 시간 초과 (30초)' });
       }
     }, 30000);
@@ -943,16 +981,20 @@ app.whenReady().then(initializeApp);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
+    if (logger) logger.debug('[종료] 카드 리더기 해제');
     stopCardReader();
     if (statsWorker && !statsWorker.killed) {
+      if (logger) logger.debug('[종료] StatsWorker 종료');
       statsWorker.kill();
       statsWorker = null;
     }
     if (mailWorker && !mailWorker.killed) {
+      if (logger) logger.debug('[종료] MailWorker 종료');
       mailWorker.kill();
       mailWorker = null;
     }
     if (db) {
+      if (logger) logger.debug('[종료] 데이터베이스 닫기');
       db.close();
     }
     if (logger) {

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   // --- 앱 ---
   log: (level, ...args) => ipcRenderer.send('console-log', level, ...args),
   onLogEntry: (cb) => ipcRenderer.on('log:entry', (_, entry) => cb(entry)),
+  onLogLevelChanged: (cb) => ipcRenderer.on('log:level-changed', (_, level) => cb(level)),
   isFirstRun: () => ipcRenderer.invoke('app:isFirstRun'),
   getBasePath: () => ipcRenderer.invoke('app:getBasePath'),
   saveBasePath: (p) => ipcRenderer.invoke('app:saveBasePath', p),

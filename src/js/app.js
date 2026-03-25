@@ -3859,6 +3859,7 @@ class WebConsole {
     console.debug = function (...args) {
       origDebug.apply(console, args);
       if (!self._isLogging) {
+        if (window.api && window.api.log) window.api.log('DEBUG', ...args);
         self.addEntry('DEBUG', self._argsToString(args), 'renderer');
       }
     };
@@ -3868,6 +3869,12 @@ class WebConsole {
     if (window.api && window.api.onLogEntry) {
       window.api.onLogEntry((entry) => {
         this.addEntry(entry.level, entry.message, entry.source || 'main', entry.timestamp);
+      });
+    }
+    if (window.api && window.api.onLogLevelChanged) {
+      window.api.onLogLevelChanged((level) => {
+        this.logLevelSetting = level || 'DEBUG';
+        this._rerender();
       });
     }
   }
