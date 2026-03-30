@@ -230,9 +230,8 @@ class App {
       overlay.remove();
 
       try {
-        this.updateProgress(pid, { step: '첨부파일 생성 중...', percent: 15 });
-        const events = await window.api.getTodayEvents();
-        const attachment = this._buildTodayAttachment(events);
+        this.updateProgress(pid, { step: '이번 주 통계 생성 중...', percent: 15 });
+        const attachment = await this._buildCurrentWeekAttachment();
 
         this.updateProgress(pid, { step: '메일 서버 연결 중...', percent: 40, detail: to });
 
@@ -261,28 +260,58 @@ class App {
     };
   }
 
-  _buildTodayAttachment(events) {
-    const header = ['번호', '이름', '메뉴', '입력방식', '시간'];
-    const aoa = [header];
-    for (const ev of (events || [])) {
-      aoa.push([
-        ev.number || '',
-        ev.name || '',
-        ev.final_menu || ev.menu_type || '',
-        ev.input_method || '',
-        ev.created_at || '',
-      ]);
+  async _buildCurrentWeekAttachment() {
+    // 이번 주 월~일 범위 계산
+    const now = new Date();
+    const day = now.getDay() || 7;
+    const mon = new Date(now); mon.setDate(now.getDate() - day + 1);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    const fmt = d => d.toISOString().slice(0, 10);
+    const start = fmt(mon), end = fmt(sun);
+
+    // 평일 목록
+    const weekdays = [];
+    for (let dt = new Date(mon); dt <= sun; dt.setDate(dt.getDate() + 1)) {
+      const dow = dt.getDay();
+      if (dow >= 1 && dow <= 5) {
+        weekdays.push({ dateStr: dt.toISOString().slice(0, 10), day: dt.getDate(), dow });
+      }
     }
-    if (typeof XLSX !== 'undefined') {
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
-      ws['!cols'] = [{ wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 18 }];
-      XLSX.utils.book_append_sheet(wb, ws, '이용현황');
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
+
+    const [detailRows, activeUsers] = await Promise.all([
+      window.api.getPeriodDetailStats(start, end),
+      window.api.searchUsers('', 'active')
+    ]);
+
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const userDateMap = new Map();
+    for (const row of (detailRows || [])) {
+      if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+      const method = row.input_method === 'card' ? '카드' : '수동';
+      const cell = `${row.final_menu}(${method})`;
+      userDateMap.get(row.user_id).set(row.event_date, cell);
     }
-    const BOM = '\uFEFF';
-    return { data: BOM + aoa.map(row => row.join(',')).join('\n'), type: 'csv' };
+
+    const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+      const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+      return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+    });
+
+    const headerRow = ['번호', '이름', ...weekdays.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+    const aoa = [headerRow];
+    for (const u of sortedUsers) {
+      const dateMap = userDateMap.get(u.id) || new Map();
+      const cells = weekdays.map(wd => dateMap.get(wd.dateStr) || 'X');
+      aoa.push([u.number, u.name, ...cells]);
+    }
+
+    if (typeof XLSX === 'undefined') return null;
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 8 }, { wch: 10 }, ...weekdays.map(() => ({ wch: 14 }))];
+    XLSX.utils.book_append_sheet(wb, ws, '이용현황');
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
   }
 
   showProgress(title) {
@@ -2703,7 +2732,7 @@ class DashboardPage {
     ws['!cols'] = [{ wch: 8 }, { wch: 10 }, ...weekdays.map(() => ({ wch: 14 }))];
     XLSX.utils.book_append_sheet(wb, ws, '전체');
 
-    // 주차별 시트 추가
+    // 주차별 시트 추가 — 불완전 주를 월~금으로 확장
     const weeks = [];
     let currentWeek = null;
     for (const wd of weekdays) {
@@ -2713,15 +2742,78 @@ class DashboardPage {
       }
       currentWeek.push(wd);
     }
+
+    // 첫째 주 앞쪽 확장 (월요일까지)
+    const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const extDays = []; // 인접 달에서 확장된 날짜들
+    if (weeks.length > 0 && weeks[0][0].dow > 1) {
+      const firstParts = weeks[0][0].dateStr.split('-');
+      const firstDate = new Date(+firstParts[0], +firstParts[1] - 1, +firstParts[2]);
+      const origDow = weeks[0][0].dow;
+      for (let dow = origDow - 1; dow >= 1; dow--) {
+        const dt = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() - (origDow - dow));
+        const wd = { dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 };
+
+        weeks[0].unshift(wd);
+        extDays.push(wd);
+      }
+    }
+    // 마지막 주 뒤쪽 확장 (금요일까지)
+    if (weeks.length > 0) {
+      const lastWk = weeks[weeks.length - 1];
+      const lastWd = lastWk[lastWk.length - 1];
+
+      if (lastWd.dow < 5) {
+        const lastDate = new Date(+lastWd.dateStr.split('-')[0], +lastWd.dateStr.split('-')[1] - 1, +lastWd.dateStr.split('-')[2]);
+        for (let dow = lastWd.dow + 1; dow <= 5; dow++) {
+          const dt = new Date(lastDate.getFullYear(), lastDate.getMonth(), lastDate.getDate() + (dow - lastWd.dow));
+          const wd = { dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 };
+
+          lastWk.push(wd);
+          extDays.push(wd);
+        }
+      }
+    }
+
+    // 확장된 날짜의 이벤트 데이터 추가 fetch
+    if (extDays.length > 0) {
+      const extDates = extDays.map(d => d.dateStr).sort();
+      const extStart = extDates[0], extEnd = extDates[extDates.length - 1];
+      const extRows = await window.api.getPeriodDetailStats(extStart, extEnd);
+      for (const row of (extRows || [])) {
+        if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+        const method = row.input_method === 'card' ? '카드' : '수동';
+        const cell = `${row.final_menu}(${method})`;
+        userDateMap.get(row.user_id).set(row.event_date, cell);
+      }
+    }
+
+    const curMonth = +m;
     for (let wi = 0; wi < weeks.length; wi++) {
       const wk = weeks[wi];
-      const sheetName = `${wi + 1}주차(${wk[0].day}~${wk[wk.length - 1].day}일)`;
-      const wkHeader = ['번호', '이름', ...wk.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+      // 시트 이름: 다른 달 포함 시 월 표시
+      const first = wk[0], last = wk[wk.length - 1];
+      const firstMonth = first.month || curMonth, lastMonth = last.month || curMonth;
+      let sheetName;
+      if (firstMonth !== curMonth || lastMonth !== curMonth) {
+        const fLabel = firstMonth !== curMonth ? `${firstMonth}.${first.day}` : `${first.day}`;
+        const lLabel = lastMonth !== curMonth ? `${lastMonth}.${last.day}` : `${last.day}`;
+        sheetName = `${wi + 1}주차(${fLabel}~${lLabel})`;
+      } else {
+        sheetName = `${wi + 1}주차(${first.day}~${last.day}일)`;
+      }
+      // 헤더: 다른 달 날짜는 월/일 형식
+      const wkHeader = ['번호', '이름', ...wk.map(wd => {
+        const wdMonth = wd.month || curMonth;
+        if (wdMonth !== curMonth) return `${wdMonth}/${wd.day}(${dayNames[wd.dow]})`;
+        return `${wd.day}일(${dayNames[wd.dow]})`;
+      })];
       const wkAoa = [wkHeader];
+      const threshold = Math.min(3, wk.length);
       const filtered = sortedUsers.filter(u => {
         const dateMap = userDateMap.get(u.id) || new Map();
         const xCount = wk.filter(wd => !dateMap.has(wd.dateStr)).length;
-        return xCount >= 3;
+        return xCount >= threshold;
       });
       for (const u of filtered) {
         const dateMap = userDateMap.get(u.id) || new Map();
@@ -2767,6 +2859,33 @@ class DashboardPage {
       }
     }
 
+    // 주차 경계 확장용 날짜 계산
+    const fmtDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const curMonth = +m;
+    const extDays = [];
+
+    // 첫째 주 앞쪽 확장 (월요일까지)
+    if (weekdays.length > 0 && weekdays[0].dow > 1) {
+      const firstDate = new Date(+y, +m - 1, weekdays[0].day);
+      const origDow = weekdays[0].dow;
+      for (let dow = origDow - 1; dow >= 1; dow--) {
+        const dt = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() - (origDow - dow));
+        extDays.push({ dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 });
+      }
+    }
+
+    // 마지막 주 뒤쪽 확장 (금요일까지)
+    if (weekdays.length > 0) {
+      const lastWd = weekdays[weekdays.length - 1];
+      if (lastWd.dow < 5) {
+        const lastDate = new Date(+y, +m - 1, lastWd.day);
+        for (let dow = lastWd.dow + 1; dow <= 5; dow++) {
+          const dt = new Date(lastDate.getFullYear(), lastDate.getMonth(), lastDate.getDate() + (dow - lastWd.dow));
+          extDays.push({ dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 });
+        }
+      }
+    }
+
     const userDateMap = new Map();
     for (const row of (detailRows || [])) {
       if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
@@ -2775,12 +2894,24 @@ class DashboardPage {
       userDateMap.get(row.user_id).set(row.event_date, cell);
     }
 
+    // 확장된 날짜의 이벤트 데이터 추가 fetch
+    if (extDays.length > 0) {
+      const extDates = extDays.map(d => d.dateStr).sort();
+      const extRows = await window.api.getPeriodDetailStats(extDates[0], extDates[extDates.length - 1]);
+      for (const row of (extRows || [])) {
+        if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+        const method = row.input_method === 'card' ? '카드' : '수동';
+        const cell = `${row.final_menu}(${method})`;
+        userDateMap.get(row.user_id).set(row.event_date, cell);
+      }
+    }
+
     const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
       const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
       return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
     });
 
-    return { type: 'monthly', data: { weekdays, userDateMap, sortedUsers } };
+    return { type: 'monthly', data: { weekdays, userDateMap, sortedUsers, extDays, curMonth } };
   }
 
   async _downloadCSV() {
