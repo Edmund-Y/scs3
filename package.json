@@ -1,6 +1,6 @@
 {
   "name": "korea-restaurant",
-  "version": "3.2.14",
+  "version": "3.2.15",
 
   "description": "경로식당 이용자 관리 프로그램",
   "main": "main.js",

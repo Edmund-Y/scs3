@@ -230,8 +230,8 @@ class App {
       overlay.remove();
 
       try {
-        this.updateProgress(pid, { step: '이번 주 통계 생성 중...', percent: 15 });
-        const attachment = await this._buildCurrentWeekAttachment();
+        this.updateProgress(pid, { step: `${y}년 ${m}월 통계 생성 중...`, percent: 15 });
+        const attachment = await this._buildCurrentMonthAttachment(y, m);
 
         this.updateProgress(pid, { step: '메일 서버 연결 중...', percent: 40, detail: to });
 
@@ -240,7 +240,7 @@ class App {
           subject,
           body,
           attachment,
-          attachmentFilename: `이용현황_${y}${m}${d}`,
+          attachmentFilename: `이용현황_${y}${m}`,
         });
 
         if (res.success) {
@@ -258,6 +258,136 @@ class App {
         this.showToast(`메일 발송 오류: ${e.message}`, 'error', 5000);
       }
     };
+  }
+
+  async _buildCurrentMonthAttachment(y, m) {
+    const yearMonth = `${y}-${m}`;
+
+    const [detailRows, activeUsers] = await Promise.all([
+      window.api.getMonthlyDetailStats(yearMonth),
+      window.api.searchUsers('', 'active')
+    ]);
+
+    const holidays = await window.api.getHolidays(+y, +m);
+    const holidaySet = new Set(holidays);
+    const lastDay = new Date(+y, +m, 0).getDate();
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const weekdays = [];
+    for (let dd = 1; dd <= lastDay; dd++) {
+      const dt = new Date(+y, +m - 1, dd);
+      const dow = dt.getDay();
+      if (dow >= 1 && dow <= 5 && !holidaySet.has(dd)) {
+        weekdays.push({ dateStr: `${yearMonth}-${String(dd).padStart(2, '0')}`, day: dd, dow });
+      }
+    }
+
+    const userDateMap = new Map();
+    for (const row of (detailRows || [])) {
+      if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+      const method = row.input_method === 'card' ? '카드' : '수동';
+      userDateMap.get(row.user_id).set(row.event_date, `${row.final_menu}(${method})`);
+    }
+
+    const sortedUsers = [...(activeUsers || [])].sort((a, b) => {
+      const na = parseInt(a.number) || 0, nb = parseInt(b.number) || 0;
+      return na !== nb ? na - nb : (a.number || '').localeCompare(b.number || '');
+    });
+
+    if (typeof XLSX === 'undefined') return null;
+    const wb = XLSX.utils.book_new();
+
+    // 전체 시트
+    const headerRow = ['번호', '이름', ...weekdays.map(wd => `${wd.day}일(${dayNames[wd.dow]})`)];
+    const aoa = [headerRow];
+    for (const u of sortedUsers) {
+      const dateMap = userDateMap.get(u.id) || new Map();
+      aoa.push([u.number, u.name, ...weekdays.map(wd => dateMap.get(wd.dateStr) || 'X')]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{ wch: 8 }, { wch: 10 }, ...weekdays.map(() => ({ wch: 14 }))];
+    XLSX.utils.book_append_sheet(wb, ws, '전체');
+
+    // 주차별 시트
+    const fmtDate = dt => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    const weeks = [];
+    let currentWeek = null;
+    for (const wd of weekdays) {
+      if (!currentWeek || wd.dow === 1) { currentWeek = []; weeks.push(currentWeek); }
+      currentWeek.push(wd);
+    }
+
+    // 첫째 주 앞쪽 확장
+    const extDays = [];
+    if (weeks.length > 0 && weeks[0][0].dow > 1) {
+      const first = weeks[0][0];
+      const firstDate = new Date(+y, +m - 1, first.day);
+      for (let dow = first.dow - 1; dow >= 1; dow--) {
+        const dt = new Date(firstDate.getFullYear(), firstDate.getMonth(), firstDate.getDate() - (first.dow - dow));
+        const wd = { dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 };
+        weeks[0].unshift(wd);
+        extDays.push(wd);
+      }
+    }
+    // 마지막 주 뒤쪽 확장
+    if (weeks.length > 0) {
+      const lastWk = weeks[weeks.length - 1];
+      const lastWd = lastWk[lastWk.length - 1];
+      if (lastWd.dow < 5) {
+        const lastDate = new Date(+y, +m - 1, lastWd.day);
+        for (let dow = lastWd.dow + 1; dow <= 5; dow++) {
+          const dt = new Date(lastDate.getFullYear(), lastDate.getMonth(), lastDate.getDate() + (dow - lastWd.dow));
+          const wd = { dateStr: fmtDate(dt), day: dt.getDate(), dow, month: dt.getMonth() + 1 };
+          lastWk.push(wd);
+          extDays.push(wd);
+        }
+      }
+    }
+
+    // 확장 날짜 데이터 fetch
+    if (extDays.length > 0) {
+      const extDates = extDays.map(d => d.dateStr).sort();
+      const extRows = await window.api.getPeriodDetailStats(extDates[0], extDates[extDates.length - 1]);
+      for (const row of (extRows || [])) {
+        if (!userDateMap.has(row.user_id)) userDateMap.set(row.user_id, new Map());
+        const method = row.input_method === 'card' ? '카드' : '수동';
+        userDateMap.get(row.user_id).set(row.event_date, `${row.final_menu}(${method})`);
+      }
+    }
+
+    const curMonth = +m;
+    for (let wi = 0; wi < weeks.length; wi++) {
+      const wk = weeks[wi];
+      const first = wk[0], last = wk[wk.length - 1];
+      const firstMonth = first.month || curMonth, lastMonth = last.month || curMonth;
+      let sheetName;
+      if (firstMonth !== curMonth || lastMonth !== curMonth) {
+        const fLabel = firstMonth !== curMonth ? `${firstMonth}.${first.day}` : `${first.day}`;
+        const lLabel = lastMonth !== curMonth ? `${lastMonth}.${last.day}` : `${last.day}`;
+        sheetName = `${wi + 1}주차(${fLabel}~${lLabel})`;
+      } else {
+        sheetName = `${wi + 1}주차(${first.day}~${last.day}일)`;
+      }
+      const wkHeader = ['번호', '이름', ...wk.map(wd => {
+        const wdMonth = wd.month || curMonth;
+        return wdMonth !== curMonth ? `${wdMonth}/${wd.day}(${dayNames[wd.dow]})` : `${wd.day}일(${dayNames[wd.dow]})`;
+      })];
+      const wkAoa = [wkHeader];
+      const threshold = Math.min(3, wk.length);
+      const filtered = sortedUsers.filter(u => {
+        const dateMap = userDateMap.get(u.id) || new Map();
+        return wk.filter(wd => !dateMap.has(wd.dateStr)).length >= threshold;
+      });
+      for (const u of filtered) {
+        const dateMap = userDateMap.get(u.id) || new Map();
+        wkAoa.push([u.number, u.name, ...wk.map(wd => dateMap.get(wd.dateStr) || 'X')]);
+      }
+      const wkWs = XLSX.utils.aoa_to_sheet(wkAoa);
+      wkWs['!cols'] = [{ wch: 8 }, { wch: 10 }, ...wk.map(() => ({ wch: 14 }))];
+      XLSX.utils.book_append_sheet(wb, wkWs, sheetName);
+    }
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    return { data: Array.from(new Uint8Array(wbout)), type: 'xlsx' };
   }
 
   async _buildCurrentWeekAttachment() {
