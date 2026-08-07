@@ -2014,9 +2014,9 @@ class SpecialRemarksPage {
     container.innerHTML = `<div style="color: var(--text-muted); font-size: 13px;">불러오는 중...</div>`;
     try {
       this._allRemarks = await window.api.getAllSpecialRemarks();
-      this._userCounts = await Promise.all(
-        this._allRemarks.map(r => window.api.getUsersForRemark(r.id).then(u => u.length).catch(() => 0))
-      );
+      const countsArr = await window.api.getRemarkUserCounts();
+      const countsMap = Object.fromEntries(countsArr.map(c => [c.remark_id, c.count]));
+      this._userCounts = this._allRemarks.map(r => countsMap[r.id] || 0);
       this._renderSummary();
       this._renderCards();
     } catch (e) {

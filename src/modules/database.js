@@ -6,6 +6,7 @@
 const path = require('path');
 const fs = require('fs');
 const initSqlJs = require('sql.js');
+const { formatKstDateTime, formatKstDate } = require('./time-utils');
 
 class DatabaseManager {
   constructor(basePath, logger) {
@@ -76,24 +77,9 @@ class DatabaseManager {
 
   // ==================== 유틸리티 ====================
 
-  _kstNow() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    const h = String(now.getHours()).padStart(2, '0');
-    const min = String(now.getMinutes()).padStart(2, '0');
-    const s = String(now.getSeconds()).padStart(2, '0');
-    return `${y}-${m}-${d} ${h}:${min}:${s}`;
-  }
+  _kstNow() { return formatKstDateTime(); }
 
-  _kstToday() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
+  _kstToday() { return formatKstDate(); }
 
   _queryAll(sql, params = []) {
     const stmt = this.db.prepare(sql);
@@ -399,63 +385,40 @@ class DatabaseManager {
     }
   }
 
+  _buildSearchCondition(query, statusFilter) {
+    const where = `WHERE u.number != 'TICKET'
+      AND (? = 'all' OR u.status = ?)
+      AND (? IS NULL OR ? = '' OR LOWER(u.number) LIKE '%' || LOWER(?) || '%' OR LOWER(u.name) LIKE '%' || LOWER(?) || '%')`;
+    const order = `ORDER BY CAST(u.number AS INTEGER), u.number`;
+    const params = [statusFilter, statusFilter, query || null, query || null, query || null, query || null];
+    return { where, order, params };
+  }
+
   searchUsers(query, statusFilter = 'all') {
     this.logger.debug(`[DB:searchUsers] query=${query}, statusFilter=${statusFilter}`);
+    const { where, order, params } = this._buildSearchCondition(query, statusFilter);
     return this._queryAll(`
       SELECT u.*,
         (SELECT card_number FROM cards c WHERE c.user_id = u.id AND c.deactivated_at IS NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1) as card_number
-      FROM users u
-      WHERE u.number != 'TICKET'
-      AND (? = 'all' OR u.status = ?)
-      AND (? IS NULL OR ? = '' OR LOWER(u.number) LIKE '%' || LOWER(?) || '%' OR LOWER(u.name) LIKE '%' || LOWER(?) || '%')
-      ORDER BY CAST(u.number AS INTEGER), u.number
-    `, [statusFilter, statusFilter, query || null, query || null, query || null, query || null]);
+      FROM users u ${where} ${order}
+    `, params);
   }
 
   searchUsersPaginated(query, statusFilter = 'all', page = 1, pageSize = 50) {
     this.logger.debug(`[DB:searchUsersPaginated] query=${query}, statusFilter=${statusFilter}, page=${page}`);
+    const { where, order, params } = this._buildSearchCondition(query, statusFilter);
     const offset = (page - 1) * pageSize;
-    const totalRow = this._queryOne(`
-      SELECT COUNT(*) as total FROM users u
-      WHERE u.number != 'TICKET'
-      AND (? = 'all' OR u.status = ?)
-      AND (? IS NULL OR ? = '' OR LOWER(u.number) LIKE '%' || LOWER(?) || '%' OR LOWER(u.name) LIKE '%' || LOWER(?) || '%')
-    `, [statusFilter, statusFilter, query || null, query || null, query || null, query || null]);
+    const totalRow = this._queryOne(`SELECT COUNT(*) as total FROM users u ${where}`, [...params]);
     const total = totalRow ? totalRow.total : 0;
-
     const users = this._queryAll(`
       SELECT u.*,
         (SELECT card_number FROM cards c WHERE c.user_id = u.id AND c.deactivated_at IS NULL ORDER BY c.issued_at DESC, c.id DESC LIMIT 1) as card_number
-      FROM users u
-      WHERE u.number != 'TICKET'
-      AND (? = 'all' OR u.status = ?)
-      AND (? IS NULL OR ? = '' OR LOWER(u.number) LIKE '%' || LOWER(?) || '%' OR LOWER(u.name) LIKE '%' || LOWER(?) || '%')
-      ORDER BY CAST(u.number AS INTEGER), u.number
-      LIMIT ? OFFSET ?
-    `, [statusFilter, statusFilter, query || null, query || null, query || null, query || null, pageSize, offset]);
-
+      FROM users u ${where} ${order} LIMIT ? OFFSET ?
+    `, [...params, pageSize, offset]);
     return { users, total };
   }
 
-  getUserById(userId) {
-    this.logger.debug(`[DB:getUserById] userId=${userId}`);
-    const user = this._queryOne(`SELECT * FROM users WHERE id = ?`, [userId]);
-    if (!user) return null;
-    // 특이사항 포함
-    const remarks = this._queryAll(`
-      SELECT sr.name, sr.start_date, sr.end_date, sr.is_active
-      FROM user_special_remarks usr JOIN special_remarks sr ON usr.remark_id = sr.id
-      WHERE usr.user_id = ?
-    `, [userId]);
-    const active = remarks.filter(r => r.is_active).map(r => r.name);
-    user.special_remarks = active.length > 0 ? active.join(', ') : null;
-    user.special_remarks_details = { active, expired: remarks.filter(r => !r.is_active).map(r => r.name) };
-    return user;
-  }
-
-  getUserByNumber(number) {
-    this.logger.debug(`[DB:getUserByNumber] number=${number}`);
-    const user = this._queryOne(`SELECT * FROM users WHERE number = ? AND status IN ('active', 'suspended')`, [number]);
+  _attachSpecialRemarks(user) {
     if (!user) return null;
     const remarks = this._queryAll(`
       SELECT sr.name, sr.start_date, sr.end_date, sr.is_active
@@ -466,6 +429,18 @@ class DatabaseManager {
     user.special_remarks = active.length > 0 ? active.join(', ') : null;
     user.special_remarks_details = { active, expired: remarks.filter(r => !r.is_active).map(r => r.name) };
     return user;
+  }
+
+  getUserById(userId) {
+    this.logger.debug(`[DB:getUserById] userId=${userId}`);
+    const user = this._queryOne(`SELECT * FROM users WHERE id = ?`, [userId]);
+    return this._attachSpecialRemarks(user);
+  }
+
+  getUserByNumber(number) {
+    this.logger.debug(`[DB:getUserByNumber] number=${number}`);
+    const user = this._queryOne(`SELECT * FROM users WHERE number = ? AND status IN ('active', 'suspended')`, [number]);
+    return this._attachSpecialRemarks(user);
   }
 
   getUserByCardNumber(cardNumber) {
@@ -994,6 +969,16 @@ class DatabaseManager {
       this.logger.error(`[DB:unassignRemark] 실패: ${e.message}`);
       return { success: false, message: `해제 실패: ${e.message}` };
     }
+  }
+
+  getRemarkUserCounts() {
+    return this._queryAll(`
+      SELECT usr.remark_id, COUNT(*) as count
+      FROM user_special_remarks usr
+      JOIN users u ON usr.user_id = u.id
+      WHERE u.deleted_at IS NULL
+      GROUP BY usr.remark_id
+    `);
   }
 
   // ==================== 통계 ====================

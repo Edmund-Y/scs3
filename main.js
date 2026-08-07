@@ -16,7 +16,6 @@ const { DatabaseManager } = require('./src/modules/database');
 const { ConfigManager } = require('./src/modules/config');
 const { SettingsManager } = require('./src/modules/settings');
 const { Logger } = require('./src/modules/logger');
-const { TimeUtils } = require('./src/modules/time-utils');
 
 let mainWindow = null;
 let db = null;
@@ -360,6 +359,7 @@ ipcMain.handle('db:addSpecialRemark', (_, name, desc, order, start, end, active)
 ipcMain.handle('db:updateSpecialRemark', (_, id, name, desc, isActive, startDate, endDate) => db.updateSpecialRemark(id, name, desc, isActive, startDate, endDate));
 ipcMain.handle('db:deleteSpecialRemark', (_, remarkId) => db.deleteSpecialRemark(remarkId));
 ipcMain.handle('db:getUsersForRemark', (_, remarkId) => db.getUsersForRemark(remarkId));
+ipcMain.handle('db:getRemarkUserCounts', () => db.getRemarkUserCounts());
 ipcMain.handle('db:assignRemark', (_, userId, remarkId) => db.assignRemark(userId, remarkId));
 ipcMain.handle('db:unassignRemark', (_, userId, remarkId) => db.unassignRemark(userId, remarkId));
 

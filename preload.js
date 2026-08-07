@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('api', {
   updateSpecialRemark: (id, name, desc, isActive, startDate, endDate) => dbInvoke('db:updateSpecialRemark', id, name, desc, isActive, startDate, endDate),
   deleteSpecialRemark: (id) => dbInvoke('db:deleteSpecialRemark', id),
   getUsersForRemark: (id) => ipcRenderer.invoke('db:getUsersForRemark', id),
+  getRemarkUserCounts: () => ipcRenderer.invoke('db:getRemarkUserCounts'),
   assignRemark: (uid, rid) => dbInvoke('db:assignRemark', uid, rid),
   unassignRemark: (uid, rid) => dbInvoke('db:unassignRemark', uid, rid),
 
